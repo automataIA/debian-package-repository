@@ -1,57 +1,608 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>@LABEL@ — APT repository</title>
+<meta name="description" content="@DESCRIPTION@">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23276a45'/%3E%3Cpath d='M8 23 14.5 8h3L24 23h-3.4l-1.3-3.4h-6.8L11.2 23zm5.5-6.2h4.8L16 10.7z' fill='white'/%3E%3C/svg%3E">
+<title>@LABEL@ — signed APT repository</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; }
-  code, pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: .1em .35em; border-radius: .3em; }
-  pre { padding: 1em; overflow-x: auto; }
-  h1 { margin-bottom: 0; }
-  .muted { opacity: .7; }
+  :root {
+    color-scheme: light dark;
+    --paper: #f2f0e8;
+    --surface: #faf9f4;
+    --ink: #172019;
+    --muted: #596159;
+    --line: #c9ccc3;
+    --accent: #276a45;
+    --accent-soft: #dce9dd;
+    --code: #151a16;
+    --code-ink: #edf3e9;
+    --shadow: 0 1rem 3rem rgb(32 42 34 / 8%);
+    --radius: .35rem;
+    --page: 72rem;
+  }
+
+  * { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    background: var(--paper);
+  }
+
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      linear-gradient(90deg, transparent 0 49.95%, rgb(23 32 25 / 3%) 50%, transparent 50.05%),
+      var(--paper);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      "Segoe UI", sans-serif;
+    font-size: 1rem;
+    line-height: 1.65;
+  }
+
+  a {
+    color: var(--accent);
+    text-underline-offset: .2em;
+    text-decoration-thickness: .08em;
+  }
+
+  a:hover { text-decoration-thickness: .14em; }
+
+  a:focus-visible,
+  summary:focus-visible {
+    outline: .2rem solid var(--accent);
+    outline-offset: .22rem;
+    border-radius: .1rem;
+  }
+
+  code,
+  .mono {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: .92em;
+  }
+
+  .skip-link {
+    position: fixed;
+    z-index: 10;
+    inset: .75rem auto auto .75rem;
+    padding: .65rem .85rem;
+    color: var(--surface);
+    background: var(--ink);
+    transform: translateY(-180%);
+  }
+
+  .skip-link:focus { transform: translateY(0); }
+
+  .shell {
+    width: min(calc(100% - 2rem), var(--page));
+    margin-inline: auto;
+  }
+
+  .site-header {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .site-header .shell {
+    min-height: 4.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: .75rem;
+    color: var(--ink);
+    font-weight: 750;
+    letter-spacing: -.02em;
+    text-decoration: none;
+  }
+
+  .brand-mark,
+  .eyebrow,
+  .section-index,
+  .meta dt {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+
+  .brand-mark { color: var(--accent); }
+
+  .site-nav {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    font-size: .9rem;
+  }
+
+  .site-nav a { color: var(--ink); }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(17rem, .75fr);
+    gap: clamp(2rem, 6vw, 6rem);
+    padding-block: clamp(4rem, 10vw, 8.5rem);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .hero > * { min-width: 0; }
+
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    margin: 0 0 1.25rem;
+    color: var(--accent);
+  }
+
+  .eyebrow::before {
+    width: 2.5rem;
+    height: .22rem;
+    background: var(--accent);
+    content: "";
+  }
+
+  h1,
+  h2,
+  h3,
+  p { margin-top: 0; }
+
+  h1,
+  h2 {
+    font-family: Iowan Old Style, Baskerville, "Times New Roman", serif;
+    font-weight: 600;
+    letter-spacing: -.045em;
+  }
+
+  h1 {
+    max-width: 13ch;
+    margin-bottom: 1.5rem;
+    font-size: clamp(3.25rem, 8vw, 6.8rem);
+    line-height: .93;
+  }
+
+  h2 {
+    margin-bottom: 1rem;
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    line-height: 1.05;
+  }
+
+  h3 {
+    margin-bottom: .55rem;
+    font-size: 1rem;
+    letter-spacing: -.01em;
+  }
+
+  .lede {
+    max-width: 42rem;
+    margin-bottom: 2rem;
+    color: var(--muted);
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+  }
+
+  .button {
+    min-height: 2.75rem;
+    display: inline-flex;
+    align-items: center;
+    padding: .65rem 1rem;
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+    color: var(--surface);
+    background: var(--ink);
+    font-size: .9rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .button.secondary {
+    color: var(--ink);
+    background: transparent;
+  }
+
+  .button:hover {
+    color: var(--surface);
+    background: var(--accent);
+    border-color: var(--accent);
+    text-decoration: none;
+  }
+
+  .registry-card {
+    align-self: end;
+    padding: 1.5rem;
+    border-top: .3rem solid var(--accent);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .registry-card > p {
+    margin-bottom: 1.5rem;
+    color: var(--muted);
+  }
+
+  .registry-card h2 {
+    font-size: 1.7rem;
+    letter-spacing: -.025em;
+  }
+
+  .meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .meta div {
+    padding: .8rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .meta div:nth-child(odd) { padding-right: .75rem; }
+
+  .meta dt {
+    margin-bottom: .15rem;
+    color: var(--muted);
+  }
+
+  .meta dd {
+    margin: 0;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: .86rem;
+  }
+
+  .section {
+    display: grid;
+    grid-template-columns: minmax(9rem, .38fr) minmax(0, 1.62fr);
+    gap: clamp(1.5rem, 5vw, 5rem);
+    padding-block: clamp(3.5rem, 8vw, 6.5rem);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .section-index {
+    margin: .45rem 0 0;
+    color: var(--muted);
+  }
+
+  .section-copy {
+    min-width: 0;
+    max-width: 48rem;
+  }
+
+  .steps {
+    margin: 2.25rem 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: steps;
+  }
+
+  .steps > li {
+    position: relative;
+    padding: 0 0 2.5rem 3.25rem;
+    counter-increment: steps;
+  }
+
+  .steps > li::before {
+    position: absolute;
+    top: -.15rem;
+    left: 0;
+    width: 2rem;
+    height: 2rem;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--accent);
+    background: var(--surface);
+    content: counter(steps, decimal-leading-zero);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: .72rem;
+    font-weight: 700;
+  }
+
+  .steps > li:not(:last-child)::after {
+    position: absolute;
+    top: 2rem;
+    bottom: 0;
+    left: 1rem;
+    width: 1px;
+    background: var(--line);
+    content: "";
+  }
+
+  pre {
+    width: 100%;
+    max-width: 100%;
+    margin: 1rem 0 0;
+    padding: 1.15rem 1.25rem;
+    overflow-x: auto;
+    border-radius: var(--radius);
+    color: var(--code-ink);
+    background: var(--code);
+    line-height: 1.55;
+    box-shadow: inset .25rem 0 0 var(--accent);
+  }
+
+  pre code {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    font-size: .84rem;
+  }
+
+  details {
+    margin-top: .5rem;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  summary {
+    min-height: 3.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    cursor: pointer;
+    font-weight: 700;
+  }
+
+  summary::after {
+    color: var(--accent);
+    content: "+";
+    font-family: monospace;
+    font-size: 1.25rem;
+  }
+
+  summary::marker { content: ""; }
+
+  details[open] summary::after { content: "−"; }
+
+  details > div { padding: .25rem 0 1.5rem; }
+
+  .resource-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 2rem;
+    border: 1px solid var(--line);
+    background: var(--line);
+  }
+
+  .resource {
+    min-height: 8rem;
+    display: block;
+    padding: 1.25rem;
+    color: var(--ink);
+    background: var(--surface);
+    text-decoration: none;
+  }
+
+  .resource:hover,
+  .resource:focus-visible {
+    background: var(--accent-soft);
+    text-decoration: none;
+  }
+
+  .resource span {
+    display: block;
+    margin-top: .45rem;
+    color: var(--muted);
+    font-size: .88rem;
+  }
+
+  .fingerprint {
+    margin-top: 2rem;
+    padding: 1rem 1.2rem;
+    border-left: .25rem solid var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .fingerprint code {
+    display: block;
+    margin-top: .35rem;
+    overflow-wrap: anywhere;
+    color: var(--ink);
+  }
+
+  .site-footer {
+    padding-block: 2rem;
+    color: var(--muted);
+    font-size: .85rem;
+  }
+
+  .site-footer .shell {
+    display: flex;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #111512;
+      --surface: #191e1a;
+      --ink: #eef0e9;
+      --muted: #aab2aa;
+      --line: #3b433c;
+      --accent: #8dc49e;
+      --accent-soft: #26372b;
+      --code: #090c0a;
+      --code-ink: #e6eee6;
+      --shadow: 0 1rem 3rem rgb(0 0 0 / 22%);
+    }
+  }
+
+  @media (max-width: 48rem) {
+    .site-nav a:first-child { display: none; }
+
+    .hero,
+    .section {
+      grid-template-columns: 1fr;
+    }
+
+    .hero { padding-top: 4rem; }
+    .registry-card { max-width: 30rem; }
+    .section-index { margin: 0; }
+  }
+
+  @media (max-width: 34rem) {
+    .shell { width: min(calc(100% - 1.25rem), var(--page)); }
+    .site-header .shell { min-height: 4rem; }
+    .brand-mark { display: none; }
+    .site-nav { gap: .75rem; }
+    h1 { font-size: clamp(2.8rem, 17vw, 4.5rem); }
+    .resource-grid { grid-template-columns: 1fr; }
+    .site-footer .shell { flex-direction: column; }
+    .steps > li { padding-left: 2.8rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+
+  @media (forced-colors: active) {
+    .eyebrow::before,
+    .steps > li:not(:last-child)::after { background: CanvasText; }
+  }
 </style>
 </head>
 <body>
-<h1>@LABEL@</h1>
-<p class="muted"><em>@DESCRIPTION@</em></p>
+<a class="skip-link" href="#main">Skip to main content</a>
 
-<p>This is a signed APT repository (<code>@CODENAME@</code> / <code>@COMPONENTS@</code>,
-<code>@ARCHS@</code>) served via GitHub Pages. It is built by
-<a href="https://github.com/@GH_OWNER@/@GH_REPO@">GitHub Actions</a> from the
-packages published in the <a href="https://github.com/@GH_OWNER@/@GH_REPO@/releases">Releases</a>
-of each project.</p>
+<header class="site-header">
+  <div class="shell">
+    <a class="brand" href="@PAGES_URL@" aria-label="@LABEL@ home">
+      <span class="brand-mark">APT/01</span>
+      <span>@LABEL@</span>
+    </a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="#install">Installation</a>
+      <a href="https://github.com/@GH_OWNER@/@GH_REPO@">GitHub</a>
+    </nav>
+  </div>
+</header>
 
-<h2>Quick setup</h2>
-<pre><code>wget -O- @PAGES_URL@@KEYRING_FILE@ | sudo tee /usr/share/keyrings/@KEYRING_FILE@ &gt;/dev/null
-sudo tee /etc/apt/sources.list.d/automata.sources &lt;&lt;'EOF'
+<main id="main" class="shell">
+  <section class="hero" aria-labelledby="page-title">
+    <div>
+      <p class="eyebrow">Signed package archive</p>
+      <h1 id="page-title">Debian packages for automataIA tools.</h1>
+      <p class="lede">@DESCRIPTION@. One repository, authenticated metadata,
+        and standard APT updates.</p>
+      <div class="actions">
+        <a class="button" href="#install">Install the repository</a>
+        <a class="button secondary" href="https://github.com/@GH_OWNER@/@GH_REPO@">View source</a>
+      </div>
+    </div>
+
+    <aside class="registry-card" aria-labelledby="archive-profile">
+      <h2 id="archive-profile">Archive profile</h2>
+      <p>Rolling packages for standalone applications. This is an independent
+        third-party archive, not an official Debian service.</p>
+      <dl class="meta">
+        <div><dt>Suite</dt><dd>@SUITE@</dd></div>
+        <div><dt>Component</dt><dd>@COMPONENTS@</dd></div>
+        <div><dt>Architecture</dt><dd>@ARCHS@</dd></div>
+        <div><dt>Origin</dt><dd>@ORIGIN@</dd></div>
+      </dl>
+    </aside>
+  </section>
+
+  <section class="section" id="install" aria-labelledby="install-title">
+    <p class="section-index">01 / Install</p>
+    <div class="section-copy">
+      <h2 id="install-title">Add the archive once.</h2>
+      <p>The recommended setup uses the archive keyring package. It installs
+        both the public key and the Deb822 source definition, keeping trust
+        scoped to this repository.</p>
+
+      <ol class="steps">
+        <li>
+          <h3>Install the repository keyring</h3>
+          <pre><code>wget @PAGES_URL@pool/main/a/@KEYRING_PACKAGE@/@KEYRING_PACKAGE@_1.0.0-1_all.deb
+sudo apt install ./@KEYRING_PACKAGE@_1.0.0-1_all.deb
+sudo apt update</code></pre>
+        </li>
+        <li>
+          <h3>Install a package</h3>
+          <pre><code>sudo apt install search2md</code></pre>
+          <p>Replace <code>search2md</code> with the package you need. Future
+            updates are delivered through the normal APT workflow.</p>
+        </li>
+      </ol>
+
+      <details>
+        <summary>Manual setup without the keyring package</summary>
+        <div>
+          <p>Keys added manually belong in <code>/etc/apt/keyrings</code>. The
+            source remains explicitly bound to this repository key.</p>
+          <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+wget -O /tmp/automata-archive-keyring.gpg @PAGES_URL@@KEYRING_FILE@
+sudo install -m 0644 /tmp/automata-archive-keyring.gpg /etc/apt/keyrings/
+rm /tmp/automata-archive-keyring.gpg
+sudo tee /etc/apt/sources.list.d/automata.sources &gt;/dev/null &lt;&lt;'EOF'
 Types: deb
 URIs: @PAGES_URL@
 Suites: @SUITE@
 Components: @COMPONENTS@
 Architectures: @ARCHS@
-Signed-By: /usr/share/keyrings/@KEYRING_FILE@
+Signed-By: /etc/apt/keyrings/automata-archive-keyring.gpg
 EOF
 sudo apt update</code></pre>
+        </div>
+      </details>
+    </div>
+  </section>
 
-<h2>Easier: install the keyring package</h2>
-<pre><code>wget @PAGES_URL@pool/main/a/@KEYRING_PACKAGE@/@KEYRING_PACKAGE@_1.0.0-1_all.deb
-sudo apt install ./@KEYRING_PACKAGE@_1.0.0-1_all.deb
-sudo apt update</code></pre>
+  <section class="section" aria-labelledby="repository-title">
+    <p class="section-index">02 / Inspect</p>
+    <div class="section-copy">
+      <h2 id="repository-title">Verify what APT receives.</h2>
+      <p>The archive remains transparent: signed metadata, source definition,
+        public key, and package pool are directly accessible.</p>
 
-<p>Then install any package normally, e.g. <code>sudo apt install search2md</code>.</p>
+      <div class="resource-grid">
+        <a class="resource" href="dists/@SUITE@/InRelease">
+          <strong>InRelease</strong>
+          <span>Clear-signed archive metadata</span>
+        </a>
+        <a class="resource" href="dists/@SUITE@/main/binary-amd64/Packages">
+          <strong>Package index</strong>
+          <span>Published package names and versions</span>
+        </a>
+        <a class="resource" href="automata.sources">
+          <strong>Deb822 source</strong>
+          <span>APT repository configuration</span>
+        </a>
+        <a class="resource" href="@KEYRING_FILE@">
+          <strong>Public key</strong>
+          <span>Repository signing material</span>
+        </a>
+      </div>
 
-<h2>Repository contents</h2>
-<ul>
-  <li><a href="dists/@SUITE@/InRelease">dists/@SUITE@/InRelease</a> (signed metadata)</li>
-  <li><a href="@KEYRING_FILE@">@KEYRING_FILE@</a> (public signing key)</li>
-  <li><a href="automata.sources">automata.sources</a> (Deb822 sources file)</li>
-  <li><a href="pool/">pool/</a> (the .deb files)</li>
-</ul>
+      <div class="fingerprint">
+        <strong>Signing-key fingerprint</strong>
+        <code>@KEYRING_FPR@</code>
+      </div>
+    </div>
+  </section>
+</main>
 
-<p class="muted">Suite <code>@CODENAME@</code> is a rolling suite for standalone applications;
-it is not tied to a specific distribution release. Fingerprint:
-<code>@KEYRING_FPR@</code></p>
+<footer class="site-footer">
+  <div class="shell">
+    <span>@LABEL@ · @CODENAME@ / @COMPONENTS@ / @ARCHS@</span>
+    <a href="https://github.com/@GH_OWNER@/@GH_REPO@">Packaging source and issue tracker</a>
+  </div>
+</footer>
 </body>
 </html>
