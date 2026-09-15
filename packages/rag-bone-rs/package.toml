@@ -4,7 +4,7 @@ source = "~/rag-bone-rs"
 github = "automataIA/rag-bone-rs"
 
 version_source = "cargo"
-deb_revision = 1
+deb_revision = 2
 architecture = "amd64"
 section = "utils"
 priority = "optional"

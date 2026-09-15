@@ -1,0 +1,242 @@
+.TH RAG-BONE 1 "2026-09-15" "rag-bone 0.1.0" "User Commands"
+.SH NAME
+rag-bone \- search documentation and source code locally
+.SH SYNOPSIS
+.B rag-bone
+.RI [ \-\-config " FILE" ]
+.I COMMAND
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B rag-bone
+indexes documentation and multi-language source trees, then searches the
+resulting local index using dense, BM25, or hybrid retrieval.
+It supports human-readable output as well as JSON and compact output
+intended for software agents.
+.PP
+Relative source paths and index paths are resolved from the directory that
+contains the configuration file.  If no configuration file exists,
+.B rag-bone
+uses its built-in defaults.  Model files may be downloaded on first use and
+are reused from a per-user cache.
+.SH COMMANDS
+.TP
+.B config
+Print the effective configuration.  With
+.BR \-\-init ,
+write a default configuration without overwriting an existing file.
+.TP
+.B index
+Index the configured source directories.  Existing content hashes make the
+operation incremental unless
+.B \-\-reindex
+is specified.
+.TP
+.B search
+Search the index for a natural-language query and print the most relevant
+chunks.
+.TP
+.B search-batch
+Read one nonempty query per line from standard input and emit one JSON
+object per line.  Models remain loaded between queries.
+.TP
+.B watch
+Watch source directories and update the index when files change.
+.TP
+.B eval
+Evaluate a tab-separated golden set and report Recall, MRR, and latency.
+.TP
+.B get
+Fetch an indexed chunk by the identifier returned by
+.BR "search \-\-compact" .
+This command does not load models.
+.TP
+.B outline
+List the indexed chunks and structural metadata for a file, in source
+order.  This command does not load models.
+.TP
+.B find
+Find indexed definitions whose symbol matches the supplied name.  Exact
+matches are shown before substring matches.  This command does not load
+models.
+.TP
+.B catalog
+List indexed document sets that originated from the web.  This command does
+not load models.
+.TP
+.B status
+Show index statistics, including the model, provider, file count, and chunk
+count.
+.SH OPTIONS
+.TP
+.BI \-\-config " FILE"
+Read configuration from
+.IR FILE .
+The default is
+.IR ./.rag-bone.toml .
+.TP
+.BR \-h , " " \-\-help
+Display help.  Place this option after a command to display
+command-specific help.
+.TP
+.BR \-V , " " \-\-version
+Display version information.
+.SS Index and watch options
+.TP
+.BI \-\-path " PATH"
+Override the configured source directories.  For
+.BR index ,
+this option may be repeated.
+.TP
+.BI \-\-model " MODEL"
+Override the configured embedding model for
+.BR index .
+.TP
+.B \-\-reindex
+Rebuild the index from scratch, ignoring cached content hashes.
+.SS Search options
+.TP
+.BR \-k , " " \-\-limit " " N
+Return at most
+.I N
+results.
+.TP
+.B \-\-json
+Write a JSON array to standard output.  Available for
+.BR search ,
+.BR get ,
+.BR outline ,
+.BR find ,
+and
+.BR catalog .
+.TP
+.B \-\-compact
+Return chunk identifiers and one-line previews instead of full snippets.
+.TP
+.B \-\-no-rerank
+Disable cross-encoder reranking.
+.TP
+.BI \-\-reranker " RERANKER"
+Override the configured reranker with a registry identifier, model name, or
+path to an ONNX file.
+.TP
+.BI \-\-retrieval " MODE"
+Select
+.BR dense ,
+.BR bm25 ,
+or
+.BR hybrid
+retrieval.
+.TP
+.BI \-\-lang " LIST"
+Restrict results to a comma-separated list of languages, such as
+.BR rust,md .
+.TP
+.BI \-\-path-prefix " TEXT"
+Keep only results whose path contains
+.IR TEXT .
+.TP
+.BI \-\-source " TEXT"
+Keep only web-sourced results whose source URL contains
+.IR TEXT .
+Use
+.B catalog
+to inspect available sources.
+.SS Other command options
+.TP
+.BI \-\-context-lines " N"
+For
+.BR get ,
+include
+.I N
+source lines before and after the indexed span.
+.TP
+.BI \-\-queries " FILE"
+For
+.BR eval ,
+read test cases from
+.IR FILE .
+The default is
+.IR eval/queries.tsv .
+.TP
+.BI \-\-dump " FILE"
+For
+.BR eval ,
+write per-query results as JSON Lines to
+.IR FILE .
+.TP
+.BI \-k " N"
+For
+.BR eval ,
+use
+.I N
+as the Recall cutoff and number of scored results.  The default is 3.
+.SH ENVIRONMENT
+.TP
+.B XDG_CACHE_HOME
+Sets the base directory for shared model and embedding caches.  If unset,
+.B rag-bone
+uses
+.IR $HOME/.cache .
+.TP
+.B RAG_BONE_MODEL_CACHE
+Overrides the directory used for downloaded model files.
+.TP
+.B HF_HOME
+Overrides the Hugging Face cache location used by the model loader.
+.TP
+.B RAG_NO_EMB_CACHE
+If set, disables the persistent embedding cache while indexing.
+.TP
+.B ORT_DYLIB_PATH
+Overrides the ONNX Runtime shared library.  The Debian package wrapper
+sets a package-local default automatically.
+.SH FILES
+.TP
+.I ./.rag-bone.toml
+Default project configuration file.
+.TP
+.I CONFIG-DIRECTORY/.rag-bone/index.bin
+Persisted project index, stored beside the selected configuration file.
+.TP
+.I $XDG_CACHE_HOME/rag-bone/
+Shared models and embedding vectors.  Defaults to
+.I $HOME/.cache/rag-bone/
+when
+.B XDG_CACHE_HOME
+is unset.
+.SH EXIT STATUS
+.TP
+.B 0
+The command completed successfully.
+.TP
+.B nonzero
+The command failed, for example because configuration, index, model, or
+input data could not be read or validated.
+.SH EXAMPLES
+.PP
+Create a configuration and index documentation and Rust sources:
+.PP
+.EX
+rag-bone config \-\-init
+rag-bone index \-\-path ./docs \-\-path ./src
+.EE
+.PP
+Search and then retrieve one selected chunk with surrounding source lines:
+.PP
+.EX
+rag-bone search \-\-compact "where is token validation implemented?"
+rag-bone get 1\-CHUNK_ID \-\-context-lines 5
+.EE
+.PP
+Process several queries without reloading the models:
+.PP
+.EX
+printf '%s\en' "first query" "second query" | rag-bone search-batch
+.EE
+.SH SEE ALSO
+.BR grep (1),
+.BR find (1)
+.PP
+Project documentation:
+.UR https://github.com/automataIA/rag-bone-rs
+.UE
