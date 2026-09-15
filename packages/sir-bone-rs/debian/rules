@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+# Prefer the rustup toolchain: crates may need a newer rustc than the
+# distribution default.
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked --bin sirbone
+
+override_dh_auto_test:
+	./target/release/sirbone --version >/dev/null 2>&1 || \
+		./target/release/sirbone --help >/dev/null 2>&1

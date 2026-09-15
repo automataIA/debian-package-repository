@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# debver-max — Debian version comparison helper.
+#
+# Reads lines of the form "version<TAB>payload" on stdin and prints the
+# payload of the line with the highest Debian version (epoch, upstream
+# and revision semantics come from dpkg itself via --compare-versions).
+# Ties: the FIRST line wins.
+#
+# Usage: printf '1.0-1\tdeb_a\n1.0-2\tdeb_b\n' | scripts/lib/debver-max
+#        → deb_b
+
+set -euo pipefail
+
+best_ver=""
+best_payload=""
+while IFS=$'\t' read -r ver payload; do
+    [ -n "${ver:-}" ] || continue
+    if [ -z "$best_ver" ] || dpkg --compare-versions "$ver" gt "$best_ver"; then
+        best_ver="$ver"
+        best_payload="$payload"
+    fi
+done
+
+[ -n "$best_payload" ] || exit 1
+printf '%s\n' "$best_payload"

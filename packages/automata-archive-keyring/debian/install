@@ -1,0 +1,2 @@
+keyrings/automata-archive-keyring.pgp usr/share/keyrings/
+apt/automata.sources etc/apt/sources.list.d/

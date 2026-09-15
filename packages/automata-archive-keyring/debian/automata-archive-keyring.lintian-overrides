@@ -1,0 +1,7 @@
+# Installing the .sources file IS the purpose of this package: it is the
+# bootstrap package of a third-party APT repository, the same role
+# deb.nodesource or the Docker keyring packages play. The tag exists to
+# stop archive packages from silently adding external sources; here the
+# user installs the package precisely to add that source, and the
+# Signed-By keyring it ships is what makes the source verifiable.
+automata-archive-keyring: package-installs-apt-sources [etc/apt/sources.list.d/automata.sources]

@@ -1,0 +1,38 @@
+Source: kan-bone-rs
+Section: x11
+Maintainer: Automata Packaging <53933533+automataIA@users.noreply.github.com>
+# cargo/rustc are deliberately NOT Build-Depends: builds use the rustup
+# toolchain from ~/.cargo/bin (these crates need rustc >= 1.93, newer than
+# the distribution's). These are private binary recipes, not policy-style
+# rebuildable source packages — see README "Security and rebuildability".
+Build-Depends:
+ debhelper-compat (= 13),
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://github.com/automataIA/kan-bone-rs
+Vcs-Browser: https://github.com/automataIA/kan-bone-rs
+Vcs-Git: https://github.com/automataIA/kan-bone-rs.git
+
+Package: kan-bone-rs
+Architecture: amd64
+Priority: optional
+# libwayland-client, libEGL and the Vulkan loader are opened with dlopen()
+# by winit/wgpu, so they carry no DT_NEEDED entry and ${shlibs:Depends}
+# cannot see them: without these the package installs and then fails at
+# startup. libxkbcommon0 is dlopen'd too but is already picked up because
+# the binary also links it directly.
+Depends: ${misc:Depends}, ${shlibs:Depends},
+ libwayland-client0,
+ libegl1,
+ libvulkan1
+Description: Kanban boards for the COSMIC desktop, with panel applet
+ KanBone is a Kanban board for the COSMIC desktop built on libcosmic:
+ cards are kept in a local SQLite database and a companion panel applet
+ adds a card without leaving the current window. Card states are shown
+ as words as well as markers and every move is reachable from the
+ keyboard, not only by dragging.
+ .
+ This package ships both binaries (kanban-app, kanban-applet), their
+ desktop entries, AppStream metainfo and icons. A running COSMIC session
+ is required at runtime: the applet is loaded by cosmic-panel and the
+ application expects a Wayland compositor.

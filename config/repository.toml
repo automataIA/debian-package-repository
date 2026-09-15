@@ -1,0 +1,39 @@
+# Global repository configuration.
+# This file describes the APT repository as a whole; per-package
+# settings live in config/packages.toml and packages/<name>/package.toml.
+
+[repository]
+# Fields mirrored into reprepro conf/distributions and Release/InRelease.
+origin = "Automata"
+label = "Automata Packages"
+codename = "stable"
+suite = "stable"
+architectures = ["amd64"]
+components = ["main"]
+description = "Debian packages maintained by automataIA"
+
+# Debian maintainer identity used in debian/control and debian/changelog.
+maintainer = "Automata Packaging <53933533+automataIA@users.noreply.github.com>"
+
+# Packaging standards.
+debhelper_compat = 13
+standards_version = "4.7.4"
+
+[github]
+owner = "automataIA"
+repo = "debian-package-repository"
+pages_url = "https://automataia.github.io/debian-package-repository/"
+
+[keyring]
+# Name of the bootstrap package and of the exported public key file.
+package = "automata-archive-keyring"
+public_key_file = "automata-archive-keyring.pgp"
+
+# Where the dedicated OpenPGP key for this APT repository lives locally.
+# The private key MUST stay out of Git; scripts/keygen creates it here.
+# Override with the APT_GNUPGHOME environment variable.
+gnupg_home = "~/.local/share/automata-apt/gnupg"
+
+# Fingerprint of the repository signing key. Filled by scripts/keygen;
+# used by repo-build to verify the right key is being used.
+signing_key_fingerprint = "403408F5E286FDE9CBD1A6E2CF4AF8E0A5A535B6"

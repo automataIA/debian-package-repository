@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# bootstrap-tools — install packaging tools WITHOUT root.
+#
+# Downloads the .deb packages for the build toolchain via `apt-get download`
+# (works as a normal user) and extracts them into .work/tools/<prefix>.
+# scripts then prepend that prefix to PATH/PERL5LIB via scripts/lib/common.sh.
+#
+# Tools bootstrapped: debhelper (+libdebhelper-perl), reprepro, lintian,
+#                     desktop-file-utils.
+#
+# Usage: scripts/bootstrap-tools [tool...]
+#   no arguments → bootstrap everything missing
+#   --clean      → remove .work/tools
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+CLEAN=0
+TOOLS=()
+# binary provided by each apt package (may differ from the package name)
+tool_binary() {
+    case "$1" in
+        debhelper) echo dh;;
+        desktop-file-utils) echo desktop-file-validate;;
+        *) echo "$1";;
+    esac
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1;;
+        -h|--help) usage 0;;
+        *) TOOLS+=("$arg");;
+    esac
+done
+
+if [ "$CLEAN" = 1 ]; then
+    rm -rf "$TOOLS_DIR"
+    log "removed $TOOLS_DIR"
+    exit 0
+fi
+
+[ ${#TOOLS[@]} -eq 0 ] && TOOLS=(debhelper reprepro lintian desktop-file-utils)
+
+mkdir -p "$TOOLS_DIR"
+activate_tools
+
+downloaded=0
+for tool in "${TOOLS[@]}"; do
+    if have "$(tool_binary "$tool")"; then
+        step "$tool already available in PATH"
+        continue
+    fi
+    log "bootstrapping $tool into .work/tools (no root required)"
+    tmp="$(mktemp -d "$WORK_DIR/dl.XXXXXX")"
+    # apt-get download resolves the package + prints its name; we also pull
+    # the immediate dependencies that the tool needs at runtime.
+    case "$tool" in
+        debhelper)
+            pkgs="debhelper libdebhelper-perl libfile-stripnondeterminism-perl dh-autoreconf dh-strip-nondeterminism autotools-dev po-debconf dwz debugedit"
+            ;;
+        reprepro)
+            pkgs="reprepro"
+            ;;
+        desktop-file-utils)
+            pkgs="desktop-file-utils"
+            ;;
+        lintian)
+            # lintian is a large Perl program: naming it alone extracts a
+            # binary that dies on the first missing module (Config::Tiny
+            # and friends). Resolve its dependency closure and keep the
+            # architecture-independent Perl libraries it needs.
+            pkgs="lintian $(apt-cache depends --recurse --no-recommends --no-suggests \
+                --no-conflicts --no-breaks --no-replaces --no-enhances lintian 2>/dev/null \
+                | awk '/^[a-z0-9]/ { print $1 }' | sort -u \
+                | grep -E '^lib.*-perl$' | tr '\n' ' ')"
+            ;;
+        *)
+            pkgs="$tool"
+            ;;
+    esac
+    # $pkgs is an intentional word-split list
+    # shellcheck disable=SC2086
+    (cd "$tmp" && apt-get download $pkgs >/dev/null 2>&1) || {
+        rm -rf "$tmp"
+        die "apt-get download failed for '$pkgs'. Is the package in your apt sources?"
+    }
+    for deb in "$tmp"/*.deb; do
+        dpkg-deb -x "$deb" "$TOOLS_DIR"
+    done
+    rm -rf "$tmp"
+    downloaded=1
+done
+
+if [ "$downloaded" = 1 ]; then
+    # re-check after extraction: a real non-mutating invocation, because
+    # "binary exists" does not mean "runtime deps satisfied"
+    export PATH="$TOOLS_DIR/usr/bin:$PATH"
+    export PERL5LIB="$TOOLS_DIR/usr/share/perl5${PERL5LIB:+:$PERL5LIB}"
+    tool_smoke_ok() {
+        # dh --version requires a debian/control tree, so smoke-test the
+        # Perl library load instead; everything else: --version || --help
+        case "$1" in
+            debhelper) perl -MDebian::Debhelper::Dh_Lib -e 1 >/dev/null 2>&1;;
+            *) "$2" --version >/dev/null 2>&1 || "$2" --help >/dev/null 2>&1;;
+        esac
+    }
+    for tool in "${TOOLS[@]}"; do
+        bin="$(tool_binary "$tool")"
+        if [ "$bin" != "$tool" ] || have "$bin"; then
+            if have "$bin"; then
+                if tool_smoke_ok "$tool" "$bin"; then
+                    step "$tool ready and runnable: $(command -v "$bin")"
+                else
+                    warn "$tool found but not runnable (unmet runtime deps?) — try: sudo apt install $tool"
+                fi
+            else
+                warn "$tool still missing (unmet runtime deps?) — try: sudo apt install $tool"
+            fi
+        else
+            # data-only packages (e.g. perl modules) provide no binary
+            step "extracted $tool into .work/tools"
+        fi
+    done
+fi

@@ -1,0 +1,130 @@
+name: Publish APT repository
+
+# Rebuilds the signed APT repository from every published GitHub Release
+# asset (*.deb) and deploys it to GitHub Pages. Fully idempotent: the
+# repository is rebuilt from scratch on each run; for each package the
+# highest Debian version (dpkg semantics) wins.
+#
+# Runs on: every release publication, weekly (to refresh Valid-Until
+# before signed metadata expires), and manually.
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "23 4 * * 1" # Monday 04:23 UTC, keeps Valid-Until fresh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-apt-repo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends reprepro gnupg
+
+      - name: Import repository signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          gnupghome="$RUNNER_TEMP/gnupg-apt"
+          mkdir -m 700 -p "$gnupghome"
+          # GITHUB_ENV only affects LATER steps: this step must export
+          # both variables itself, and repo-build (next step) reads
+          # APT_GNUPGHOME from the env file.
+          export GNUPGHOME="$gnupghome"
+          echo "APT_GNUPGHOME=$gnupghome" >> "$GITHUB_ENV"
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --homedir "$gnupghome" --batch --import
+          fpr="$(gpg --homedir "$gnupghome" --batch --list-secret-keys --with-colons \
+                 | awk -F: '/^fpr/ { print $10; exit }')"
+          echo "APT_KEY_FPR=$fpr" >> "$GITHUB_ENV"
+          echo "Signing key: $fpr"
+          # trust boundary: the imported key must be exactly the one the
+          # repository config declares (and whose public half is committed)
+          configured="$(python3 -c 'import tomllib; print(tomllib.load(open("config/repository.toml","rb"))["keyring"]["signing_key_fingerprint"])')"
+          [ -n "$configured" ] || { echo "config/repository.toml has no signing_key_fingerprint"; exit 1; }
+          [ "$fpr" = "$configured" ] || {
+            echo "imported key $fpr does not match configured fingerprint $configured"; exit 1;
+          }
+          if [ -n "$APT_GPG_PASSPHRASE" ]; then
+            # non-interactive signing: allow agent passphrase presets,
+            # reload the agent so the new config is loaded, then preset
+            # every secret keygrip (primary + subkeys)
+            echo 'allow-preset-passphrase' > "$gnupghome/gpg-agent.conf"
+            gpg-connect-agent --homedir "$gnupghome" reloadagent /bye
+            preset="$(command -v gpg-preset-passphrase \
+                      || echo /usr/lib/gnupg/gpg-preset-passphrase)"
+            [ -x "$preset" ] || preset=/usr/lib/gnupg2/gpg-preset-passphrase
+            gpg --homedir "$gnupghome" --batch --list-secret-keys --with-colons --with-keygrip \
+              | awk -F: '/^grp/ { print $10 }' \
+              | while IFS= read -r keygrip; do
+                  [ -n "$keygrip" ] || continue
+                  printf '%s' "$APT_GPG_PASSPHRASE" \
+                    | "$preset" --homedir "$gnupghome" --preset "$keygrip"
+                done
+            echo "passphrase preset into gpg-agent"
+          fi
+
+      - name: Build APT repository (download releases, reprepro, sign, export)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          scripts/repo-build
+
+      - name: Verify repository metadata
+        run: |
+          set -euo pipefail
+          test -s public/dists/stable/InRelease
+          test -s public/automata-archive-keyring.pgp
+          test -s public/automata.sources
+          echo "InRelease:"
+          head -n 12 public/dists/stable/InRelease
+
+      - name: End-to-end install test in real distributions (docker)
+        run: |
+          set -euo pipefail
+          # Installs the published packages the way a user does (keyring
+          # package, signed apt update, apt install) inside each image.
+          # No --allow-fail: the artifacts are built on bookworm, so every
+          # image of the matrix must install them.
+          scripts/repo-test-docker
+
+      - name: Setup Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: public
+
+  deploy:
+    needs: build-apt-repo
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -1,0 +1,3 @@
+Test-Command: sirbone --version || sirbone --help
+Depends: @
+Restrictions: allow-stderr

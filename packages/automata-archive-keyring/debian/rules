@@ -1,0 +1,5 @@
+#!/usr/bin/make -f
+# Pure data package: no build step, only file installation.
+
+%:
+	dh $@

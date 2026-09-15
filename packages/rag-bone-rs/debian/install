@@ -1,0 +1,4 @@
+target/release/rag-bone usr/libexec/rag-bone-rs/
+debian/rag-bone usr/bin/
+debian/onnxruntime/lib/libonnxruntime.so.1.24.2 usr/lib/rag-bone-rs/
+debian/onnxruntime/lib/libonnxruntime_providers_shared.so usr/lib/rag-bone-rs/

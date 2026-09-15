@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+# Prefer the rustup toolchain: crates may need a newer rustc than the
+# distribution default.
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+ORT_VERSION := 1.24.2
+ORT_ARCHIVE := debian/onnxruntime-linux-x64-$(ORT_VERSION).tgz
+ORT_DIR := debian/onnxruntime
+ORT_URL := https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)/onnxruntime-linux-x64-$(ORT_VERSION).tgz
+ORT_SHA256 := 43725474ba5663642e17684717946693850e2005efbd724ac72da278fead25e6
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	curl --fail --location --proto '=https' --tlsv1.2 \
+		--output $(ORT_ARCHIVE) $(ORT_URL)
+	printf '%s  %s\n' '$(ORT_SHA256)' '$(ORT_ARCHIVE)' | sha256sum --check --strict
+	mkdir -p $(ORT_DIR)
+	tar -xzf $(ORT_ARCHIVE) --strip-components=1 -C $(ORT_DIR)
+	cargo build --release --locked --bin rag-bone
+
+override_dh_auto_test:
+	ORT_DYLIB_PATH="$(CURDIR)/$(ORT_DIR)/lib/libonnxruntime.so.$(ORT_VERSION)" \
+		./target/release/rag-bone --version >/dev/null 2>&1 || \
+	ORT_DYLIB_PATH="$(CURDIR)/$(ORT_DIR)/lib/libonnxruntime.so.$(ORT_VERSION)" \
+		./target/release/rag-bone --help >/dev/null 2>&1
+
+# ONNX Runtime lives in a package-private directory and is loaded explicitly
+# by the wrapper, so updating the system dynamic-linker cache is unnecessary.
+override_dh_makeshlibs:
+	dh_makeshlibs --no-scripts

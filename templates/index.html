@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@LABEL@ — APT repository</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; }
+  code, pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: .1em .35em; border-radius: .3em; }
+  pre { padding: 1em; overflow-x: auto; }
+  h1 { margin-bottom: 0; }
+  .muted { opacity: .7; }
+</style>
+</head>
+<body>
+<h1>@LABEL@</h1>
+<p class="muted"><em>@DESCRIPTION@</em></p>
+
+<p>This is a signed APT repository (<code>@CODENAME@</code> / <code>@COMPONENTS@</code>,
+<code>@ARCHS@</code>) served via GitHub Pages. It is built by
+<a href="https://github.com/@GH_OWNER@/@GH_REPO@">GitHub Actions</a> from the
+packages published in the <a href="https://github.com/@GH_OWNER@/@GH_REPO@/releases">Releases</a>
+of each project.</p>
+
+<h2>Quick setup</h2>
+<pre><code>wget -O- @PAGES_URL@@KEYRING_FILE@ | sudo tee /usr/share/keyrings/@KEYRING_FILE@ &gt;/dev/null
+sudo tee /etc/apt/sources.list.d/automata.sources &lt;&lt;'EOF'
+Types: deb
+URIs: @PAGES_URL@
+Suites: @SUITE@
+Components: @COMPONENTS@
+Architectures: @ARCHS@
+Signed-By: /usr/share/keyrings/@KEYRING_FILE@
+EOF
+sudo apt update</code></pre>
+
+<h2>Easier: install the keyring package</h2>
+<pre><code>wget @PAGES_URL@pool/main/a/@KEYRING_PACKAGE@/@KEYRING_PACKAGE@_1.0.0-1_all.deb
+sudo apt install ./@KEYRING_PACKAGE@_1.0.0-1_all.deb
+sudo apt update</code></pre>
+
+<p>Then install any package normally, e.g. <code>sudo apt install search2md</code>.</p>
+
+<h2>Repository contents</h2>
+<ul>
+  <li><a href="dists/@SUITE@/InRelease">dists/@SUITE@/InRelease</a> (signed metadata)</li>
+  <li><a href="@KEYRING_FILE@">@KEYRING_FILE@</a> (public signing key)</li>
+  <li><a href="automata.sources">automata.sources</a> (Deb822 sources file)</li>
+  <li><a href="pool/">pool/</a> (the .deb files)</li>
+</ul>
+
+<p class="muted">Suite <code>@CODENAME@</code> is a rolling suite for standalone applications;
+it is not tied to a specific distribution release. Fingerprint:
+<code>@KEYRING_FPR@</code></p>
+</body>
+</html>

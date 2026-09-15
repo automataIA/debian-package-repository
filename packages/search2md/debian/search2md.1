@@ -1,0 +1,36 @@
+.TH SEARCH2MD 1 "September 2026" "search2md 0.1.0" "User Commands"
+.SH NAME
+search2md \- search the web and convert pages to Markdown
+.SH SYNOPSIS
+.B search2md
+.I COMMAND
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B search2md
+queries web search providers and converts result pages or arbitrary URLs to
+clean Markdown. Results may be cached for a later conversion step.
+.SH COMMANDS
+.TP
+.B search
+Search configured providers and cache the result list.
+.TP
+.B md
+Convert a cached result or URL to Markdown.
+.TP
+.B serve
+Run the HTTP service.
+.SH OPTIONS
+.TP
+.B \ -h, --help
+Display command help.
+.TP
+.B -V, --version
+Display version information.
+.SH EXAMPLES
+.PP
+.EX
+search2md search "Debian packaging" --limit 5
+search2md md 1 --stdout
+.EE
+.SH SEE ALSO
+Project documentation: https://github.com/automataIA/search2md

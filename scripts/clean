@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# clean — remove build state and generated output.
+#
+# Usage: scripts/clean [-f]
+#   -f   do not ask for confirmation
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+FORCE=false
+[ "${1:-}" = "-f" ] && FORCE=true
+
+load_repo_config
+
+targets=()
+[ -d "$WORK_DIR" ] && targets+=("$WORK_DIR (build trees, artifacts, downloaded debs)")
+if [ -d "$PUBLIC_DIR" ]; then
+    n="$(find "$PUBLIC_DIR" -mindepth 1 -not -name '.gitkeep' | wc -l)"
+    [ "$n" -gt 0 ] && targets+=("$PUBLIC_DIR (generated Pages output, $n entries)")
+fi
+[ -d "$REPO_DIR/db" ] && targets+=("$REPO_DIR/db $REPO_DIR/dists $REPO_DIR/pool (reprepro state)")
+
+if [ ${#targets[@]} -eq 0 ]; then
+    log "nothing to clean"
+    exit 0
+fi
+
+log "Will remove:"
+printf '    - %s\n' "${targets[@]}"
+
+if [ "$FORCE" = false ]; then
+    read -r -p "Proceed? [y/N] " answer
+    case "$answer" in
+        y|Y|yes|Yes) ;;
+        *) log "aborted"; exit 0;;
+    esac
+fi
+
+rm -rf "$WORK_DIR"
+find "$PUBLIC_DIR" -mindepth 1 -not -name '.gitkeep' -delete
+rm -rf "$REPO_DIR/db" "$REPO_DIR/dists" "$REPO_DIR/pool" "$REPO_DIR/incoming"
+log "cleaned"

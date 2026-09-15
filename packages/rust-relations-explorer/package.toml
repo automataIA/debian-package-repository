@@ -1,0 +1,21 @@
+# rust-relations-explorer — collector metadata (the real packaging lives in debian/)
+name = "rust-relations-explorer"
+source = "~/knowledge-rs"
+github = "automataIA/rust-relations-explorer"
+
+version_source = "cargo"
+deb_revision = 1
+architecture = "amd64"
+section = "devel"
+priority = "optional"
+
+cargo_bins = ["rust-relations-explorer"]
+smoke_command = "rust-relations-explorer --version"
+
+description = "Build a knowledge graph of a Rust codebase and query code relationships"
+long_description = """
+ rust-relations-explorer explores relationships in Rust codebases: it
+ builds a knowledge graph and runs queries such as connected files,
+ function usage, cycles, paths, hubs, module centrality and trait
+ implementations.
+"""

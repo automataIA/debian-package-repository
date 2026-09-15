@@ -1,0 +1,20 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: kan-bone-rs
+Source: https://github.com/automataIA/kan-bone-rs
+
+Files: *
+Copyright: 2026 kan-bone-rs contributors
+License: MPL-2.0
+ Upstream declares MPL-2.0 in the workspace manifest and ships the full
+ licence text in LICENSE.
+ .
+ On Debian systems, the complete text of the Mozilla Public License
+ version 2.0 is available in /usr/share/common-licenses/MPL-2.0.
+
+Files: apps/*/resources/app.metainfo.xml
+Copyright: 2026 kan-bone-rs contributors
+License: CC0-1.0
+ The AppStream metadata declares metadata_license CC0-1.0.
+ .
+ On Debian systems, the complete text of the CC0 1.0 Universal licence is
+ available in /usr/share/common-licenses/CC0-1.0.

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# repo-test — sanity checks for recipes, config and the built APT repository.
+#
+# Usage: scripts/repo-test [--structure-only]
+#   --structure-only   validate config + recipes without checking dists/
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+STRUCTURE_ONLY=false
+[ "${1:-}" = "--structure-only" ] && STRUCTURE_ONLY=true
+
+load_repo_config
+fail=0
+
+log "Checking configuration"
+if [ -n "$REPO_CODENAME" ]; then
+    step "repository: origin=$REPO_ORIGIN codename=$REPO_CODENAME suite=$REPO_SUITE archs=$REPO_ARCHS"
+else
+    warn "repository.codename missing"
+    fail=1
+fi
+
+log "Checking registry and recipes in config/packages.toml"
+declared_deb_names=""
+enabled_deb_names=""
+while IFS= read -r name; do
+    load_registry_entry "$name"
+    while IFS= read -r deb_name; do
+        [ -n "$deb_name" ] || continue
+        if printf '%s\n' "$declared_deb_names" | grep -Fxq -- "$deb_name"; then
+            warn "$name: Debian package name '$deb_name' is declared by more than one registry entry"
+            fail=1
+        else
+            declared_deb_names="${declared_deb_names}${deb_name}"$'\n'
+        fi
+        if [ "$REG_ENABLED" = "true" ]; then
+            enabled_deb_names="${enabled_deb_names}${deb_name}"$'\n'
+        fi
+    done <<< "$REG_DEB_NAMES"
+    if [ "$REG_ENABLED" != "true" ]; then
+        step "$name: disabled — recipe check skipped"
+        continue
+    fi
+    ok=true
+    if [ -z "$REG_RECIPE" ]; then
+        # download-only entry: no recipe required, but the expected .deb
+        # name must be declared so release assets can be validated
+        if [ "$REG_DEB_NAME" = "$name" ]; then
+            warn "$name: download-only entry (no recipe) without explicit deb_name — skipped"
+            ok=false
+        else
+            step "$name: download-only entry (deb: $REG_DEB_NAME from $REG_GITHUB)"
+        fi
+        [ "$ok" = true ] || fail=1
+        continue
+    fi
+    recipe="$REG_RECIPE_DIR"
+    [ -f "$recipe/package.toml" ] || { warn "$name: missing package.toml"; ok=false; }
+    [ -f "$recipe/debian/control" ] || { warn "$name: missing debian/control"; ok=false; }
+    [ -f "$recipe/debian/copyright" ] || { warn "$name: missing debian/copyright (mandatory)"; ok=false; }
+    [ -f "$recipe/debian/rules" ] || { warn "$name: missing debian/rules"; ok=false; }
+    [ -x "$recipe/debian/rules" ] || { warn "$name: debian/rules is not executable"; ok=false; }
+    [ -f "$recipe/debian/source/format" ] || { warn "$name: missing debian/source/format"; ok=false; }
+    declared_name="$(toml_get "$recipe/package.toml" name 2>/dev/null || true)"
+    [ "$declared_name" = "$name" ] || { warn "$name: recipe name '$declared_name' != registry entry '$name'"; ok=false; }
+    if [ "$STRUCTURE_ONLY" = false ]; then
+        if [ "$REG_PATH" = "$REPO_ROOT" ]; then
+            : # self-hosted recipe (keyring), source always exists
+        elif [ ! -d "$REG_PATH" ]; then
+            warn "$name: source directory missing locally ($REG_PATH)"
+            ok=false
+        fi
+    fi
+    smoke="$(toml_get "$recipe/package.toml" smoke_command || true)"
+    if [ "$name" != "$KEYRING_PACKAGE" ] && [ -z "$smoke" ]; then
+        warn "$name: package.toml has no smoke_command for the install matrix"
+        ok=false
+    fi
+    # debian/rules is a Makefile: check make can parse it (bash -n would
+    # validate the wrong language)
+    if have make; then
+        make -n -f "$recipe/debian/rules" build >/dev/null 2>&1 \
+            || { warn "$name: debian/rules is not parseable by make"; ok=false; }
+    fi
+    if [ "$ok" = true ]; then step "$name: recipe OK"; else fail=1; fi
+done < <(list_packages)
+
+log "Checking reprepro configuration"
+if [ -f "$REPO_DIR/conf/distributions" ]; then
+    if [ -n "$SIGNING_FPR" ]; then
+        signwith="$(awk -F': ' '$1 == "SignWith" { print $2 }' "$REPO_DIR/conf/distributions")"
+        [ "$signwith" = "$SIGNING_FPR" ] \
+            || { warn "conf/distributions SignWith '$signwith' != configured fingerprint '$SIGNING_FPR'"; fail=1; }
+    fi
+else
+    warn "missing $REPO_DIR/conf/distributions"
+    fail=1
+fi
+
+if [ "$STRUCTURE_ONLY" = true ]; then
+    log "Structure-only mode: skipping repository checks"
+else
+    log "Checking generated repository in $REPO_DIR"
+    if [ ! -f "$REPO_DIR/dists/$REPO_CODENAME/InRelease" ]; then
+        warn "no dists/$REPO_CODENAME/InRelease — run scripts/repo-build first"
+        fail=1
+    else
+        activate_tools
+        if have reprepro; then
+            reprepro -b "$REPO_DIR" check \
+                && step "reprepro check: OK" || { warn "reprepro check failed"; fail=1; }
+        fi
+        if [ -f "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE" ]; then
+            step "verifying InRelease signature with the exported keyring"
+            gpgv --keyring "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE" \
+                 "$REPO_DIR/dists/$REPO_CODENAME/InRelease" \
+                && step "signature: OK" \
+                || { warn "InRelease signature verification failed"; fail=1; }
+        else
+            # signed output without the committed public key cannot be
+            # verified by anyone — treat as a failure, not a warning
+            warn "cannot verify signature: $KEYRINGS_DIR/$KEYRING_PUBLIC_FILE missing (run scripts/keygen)"
+            fail=1
+        fi
+        index_names="$(gzip -dc "$REPO_DIR/dists/$REPO_CODENAME/main/binary-$(dpkg --print-architecture)/Packages.gz" 2>/dev/null \
+            | awk -F': ' '$1 == "Package" { print $2 }' || true)"
+        pkgs="$(printf '%s' "$index_names" | grep -c '^' || true)"
+        step "packages indexed in dists/$REPO_CODENAME: ${pkgs:-0}"
+        [ "${pkgs:-0}" -ge 1 ] || { warn "Packages index is empty"; fail=1; }
+        while IFS= read -r name; do
+            load_registry_entry "$name"
+            [ "$REG_ENABLED" = true ] || continue
+            while IFS= read -r expected; do
+                [ -n "$expected" ] || continue
+                if ! printf '%s\n' "$index_names" | grep -Fxq -- "$expected"; then
+                    warn "$name: required package '$expected' is missing from the repository index"
+                    fail=1
+                fi
+            done <<< "$REG_DEB_NAMES"
+        done < <(list_packages)
+    fi
+
+    log "Checking artifacts"
+    found_artifact=false
+    for deb in "$ARTIFACTS_DIR"/*.deb; do
+        [ -e "$deb" ] || break
+        found_artifact=true
+        if dpkg-deb --info "$deb" >/dev/null 2>&1; then
+            step "$(basename "$deb"): valid Debian package"
+            # a valid artifact missing from the signed index means reprepro
+            # silently skipped it (e.g. missing Priority in the .deb)
+            deb_name="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+            if printf '%s\n' "$enabled_deb_names" | grep -Fxq -- "$deb_name" \
+                && ! printf '%s\n' "$index_names" | grep -Fxq -- "$deb_name"; then
+                warn "$(basename "$deb"): package '$deb_name' is NOT in the repository index — run scripts/repo-build"
+                fail=1
+            elif printf '%s\n' "$declared_deb_names" | grep -Fxq -- "$deb_name"; then
+                step "$(basename "$deb"): registry package (index presence consistent with enabled state)"
+            else
+                warn "$(basename "$deb"): package '$deb_name' is not declared in the registry"
+                fail=1
+            fi
+        else
+            warn "$(basename "$deb"): CORRUPT"
+            fail=1
+        fi
+    done
+    if [ "$found_artifact" = false ]; then
+        step "no local artifacts to check"
+    fi
+fi
+
+if [ "$fail" = 0 ]; then
+    log "ALL CHECKS PASSED"
+else
+    die "some checks failed — see warnings above"
+fi

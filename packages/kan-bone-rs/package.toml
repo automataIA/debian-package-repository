@@ -1,0 +1,28 @@
+# kan-bone-rs — collector metadata (the real packaging lives in debian/)
+name = "kan-bone-rs"
+source = "~/kan-bone-rs"
+github = "automataIA/kan-bone-rs"
+
+version_source = "cargo-workspace"
+deb_revision = 1
+architecture = "amd64"
+section = "x11"
+priority = "optional"
+
+# Cargo workspace: the two desktop binaries live under apps/. They are built
+# in a single cargo invocation on purpose — Cargo unifies libcosmic's
+# features across workspace members, so building them separately yields an
+# applet without wgpu (see upstream scripts/install-dev.sh).
+cargo_bins = ["kanban-app", "kanban-applet"]
+smoke_command = "test -x /usr/bin/kanban-app && test -x /usr/bin/kanban-applet && ! ldd /usr/bin/kanban-app | grep -q 'not found' && ! ldd /usr/bin/kanban-applet | grep -q 'not found'"
+
+description = "Kanban boards for the COSMIC desktop, with panel applet"
+long_description = """
+ KanBone is a Kanban board for the COSMIC desktop built on libcosmic: cards
+ are kept in a local SQLite database and a companion panel applet adds a
+ card without leaving the current window. Card states are shown as words as
+ well as markers and every move is reachable from the keyboard.
+ .
+ This package ships both binaries, their desktop entries, AppStream
+ metainfo and icons. A running COSMIC session is required at runtime.
+"""

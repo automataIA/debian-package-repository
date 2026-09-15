@@ -1,0 +1,3 @@
+Test-Command: search2md --version || search2md --help
+Depends: @
+Restrictions: allow-stderr

@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: search2md
+Source: https://github.com/automataIA/search2md
+Comment:
+ The upstream project declares no license yet (no LICENSE file, no
+ License field in Cargo.toml). Absent an explicit upstream grant this
+ package may only be redistributed by its author; do not republish it
+ to third parties until upstream adopts a license.
+
+Files: *
+Copyright: 2026 automataIA
+License: LicenseRef-Proprietary
+ All rights reserved by the upstream author. No upstream license file
+ exists yet; this package is built from the author's own sources for
+ personal and intra-organization use only.

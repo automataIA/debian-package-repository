@@ -1,0 +1,4 @@
+# The binaries are COSMIC/Wayland clients: with no compositor there is
+# nothing to execute, so the test only asserts the shipped files exist.
+Test-Command: test -x /usr/bin/kanban-app && test -x /usr/bin/kanban-applet && test -f /usr/share/applications/io.github.carcall.KanBone.desktop && test -f /usr/share/applications/io.github.carcall.KanBoneApplet.desktop
+Depends: @

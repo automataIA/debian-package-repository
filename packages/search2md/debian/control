@@ -1,0 +1,25 @@
+Source: search2md
+Section: utils
+Maintainer: Automata Packaging <53933533+automataIA@users.noreply.github.com>
+# cargo/rustc are deliberately NOT Build-Depends: builds use the rustup
+# toolchain from ~/.cargo/bin (these crates need rustc >= 1.88, newer than
+# the distribution's). These are private binary recipes, not policy-style
+# rebuildable source packages — see README "Security and rebuildability".
+Build-Depends:
+ debhelper-compat (= 13),
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://github.com/automataIA/search2md
+Vcs-Browser: https://github.com/automataIA/search2md
+Vcs-Git: https://github.com/automataIA/search2md.git
+
+Package: search2md
+Architecture: amd64
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: search the web and convert results or pages to Markdown
+ search2md is a command line tool that queries web search engines and
+ converts result lists or single pages into clean Markdown, cached
+ locally for follow-up reads. It supports DuckDuckGo, Bing and other
+ bang-prefixed providers and is designed to be consumed by coding
+ agents and documentation pipelines.

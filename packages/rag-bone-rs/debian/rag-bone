@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+: "${ORT_DYLIB_PATH:=/usr/lib/rag-bone-rs/libonnxruntime.so.1.24.2}"
+export ORT_DYLIB_PATH
+
+exec /usr/libexec/rag-bone-rs/rag-bone "$@"

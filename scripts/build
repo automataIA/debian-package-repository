@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# build — build .deb package(s) from local upstream sources.
+#
+# The upstream source is NEVER modified: it is copied into .work/, the
+# Debian recipe from packages/<name>/debian is layered on top, a
+# debian/changelog is generated from the upstream version, and
+# dpkg-buildpackage produces the .deb into .work/artifacts/.
+#
+# The enabled/disabled authority is config/packages.toml; recipes live in
+# packages/<name>/ and only contain packaging metadata.
+#
+# Usage: scripts/build --all
+#        scripts/build [options] <name> [<name>...]
+#
+# Options:
+#   --all            build every enabled package in config/packages.toml
+#   --allow-dirty    permit building a source with uncommitted changes
+#                    (provenance recorded as <sha>-dirty; never for release)
+#   --no-orig        skip the upstream orig tarball (.orig.tar.xz) creation
+#   --keep-work      keep .work/<name>/ for debugging after the build
+#   -h, --help       show this help
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+ALLOW_DIRTY=false
+WITH_ORIG=true
+KEEP_WORK=false
+BUILD_ALL=false
+NAMES=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --all) BUILD_ALL=true;;
+        --allow-dirty) ALLOW_DIRTY=true;;
+        --no-orig) WITH_ORIG=false;;
+        --keep-work) KEEP_WORK=true;;
+        -h|--help) usage 0;;
+        -*) usage 2;;
+        *) NAMES+=("$1");;
+    esac
+    shift
+done
+
+load_repo_config
+
+if [ "$BUILD_ALL" = true ]; then
+    [ ${#NAMES[@]} -eq 0 ] || die "--all cannot be combined with package names"
+    while IFS= read -r n; do
+        # registry-first filter: disabled or recipe-less entries never hit
+        # load_package (which requires a recipe and a local source)
+        load_registry_entry "$n"
+        if [ "$REG_ENABLED" = true ] && [ -f "$REG_RECIPE_DIR/package.toml" ]; then
+            NAMES+=("$n")
+        fi
+    done < <(list_packages)
+fi
+[ ${#NAMES[@]} -gt 0 ] || { warn "nothing to build (registry empty or all entries disabled/recipe-less)"; exit 0; }
+
+mkdir -p "$ARTIFACTS_DIR"
+
+FAILED=()
+
+for name in "${NAMES[@]}"; do
+    if ! package_enabled "$name"; then
+        warn "$name is disabled in config/packages.toml — skipping"
+        continue
+    fi
+
+    load_package "$name"
+
+    upstream="$(upstream_version "$PKG_SOURCE" "$PKG_VERSION_SOURCE")"
+    fullver="$upstream-$PKG_DEB_REVISION"
+    epoch="$(source_commit_epoch "$PKG_SOURCE")"
+    srcstate="$(git_head_or_dirty "$PKG_SOURCE")"
+
+    log "[1/8] Checking $PKG_SOURCE"
+    assert_git_clean "$PKG_SOURCE" "$ALLOW_DIRTY"
+    step "package $name, upstream version $upstream, debian revision $PKG_DEB_REVISION"
+    step "source state: $srcstate (changelog/tarball pinned to epoch $epoch)"
+
+    if [ "${PKG_VERSION_SOURCE#cargo}" != "$PKG_VERSION_SOURCE" ]; then
+        PATH="$HOME/.cargo/bin:$PATH" have cargo \
+            || die "cargo not found (rustup toolchain required; install https://rustup.rs)"
+    fi
+
+    require_debhelper
+
+    log "[2/8] Preparing build tree"
+    pkgwork="$WORK_DIR/$name"
+    rm -rf "$pkgwork"
+    mkdir -p "$pkgwork/build"
+
+    log "[3/8] Copying source (upstream tree stays untouched)"
+    rsync -a \
+        --exclude='.git' \
+        --exclude='target' \
+        --exclude='node_modules' \
+        --exclude='.work' \
+        --exclude='dist' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.pytest_cache' \
+        "$PKG_SOURCE/" "$pkgwork/build/$name-$upstream/"
+
+    log "[4/8] Applying Debian recipe from $PKG_RECIPE_DIR"
+    cp -a "$PKG_RECIPE_DIR/debian" "$pkgwork/build/$name-$upstream/debian"
+    write_debian_changelog \
+        "$pkgwork/build/$name-$upstream/debian" \
+        "$name" "$fullver" \
+        "Automated package from source commit ${srcstate:0:12}." \
+        "$epoch"
+
+    if [ "$WITH_ORIG" = true ]; then
+        step "creating deterministic upstream tarball ${name}_${upstream}.orig.tar.xz"
+        # reproducible: fixed file order, mtime from the source commit,
+        # root owner (Debian reproducible-builds practice)
+        tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
+            --exclude="*/debian" \
+            -cJf "$pkgwork/${name}_${upstream}.orig.tar.xz" \
+            -C "$pkgwork/build" "$name-$upstream"
+    fi
+
+    log "[5/8] Building with dpkg-buildpackage"
+    builddir="$pkgwork/build/$name-$upstream"
+    dpkg_args=( -us -uc -b )
+    # Strict build-dependency check when possible; the only tolerated
+    # exception is the rootless environment where debhelper comes from
+    # .work/tools instead of the dpkg database (cargo/rustc are
+    # deliberately NOT Build-Depends: builds use the rustup toolchain,
+    # see README "Security and rebuildability notes").
+    if ! deps_error="$(cd "$builddir" && dpkg-checkbuilddeps 2>&1)"; then
+        # Only debhelper may be supplied by our rootless bootstrap. Never
+        # hide an unrelated missing compiler/library behind a blanket -d.
+        missing="$(printf '%s\n' "$deps_error" | sed -n 's/^dpkg-checkbuilddeps: error: Unmet build dependencies: //p')"
+        remaining="$(printf '%s\n' "$missing" | sed -E 's/(^|[[:space:]])debhelper-compat \([^)]*\)//g; s/(^|[[:space:]])debhelper \([^)]*\)//g; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+        if have dh && [ -n "$missing" ] && [ -z "$remaining" ]; then
+            warn "debhelper is supplied by the rootless tool bootstrap — running dpkg-buildpackage -d"
+            dpkg_args+=( -d )
+        else
+            die "Build-Depends not satisfied: ${missing:-$deps_error}"
+        fi
+    fi
+    # noautodbgsym: dh_strip would emit an extra -dbgsym package per binary
+    # package. Those are useless in this repository (no debug suite, no
+    # Build-Ids served) and would double the pool for nothing.
+    (cd "$builddir" && SOURCE_DATE_EPOCH="$epoch" \
+        DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }noautodbgsym" \
+        dpkg-buildpackage "${dpkg_args[@]}")
+
+    log "[6/8] Staging artifacts"
+    # A debian/control may declare several binary packages: collect every
+    # .deb the build produced, never just the first one. Silently dropping
+    # the others would publish half a recipe.
+    produced=()
+    while IFS= read -r -d '' d; do
+        produced+=("$d")
+    done < <(find "$pkgwork" -maxdepth 2 -name '*.deb' -print0 | sort -z)
+    [ ${#produced[@]} -gt 0 ] || { FAILED+=("$name"); die "no .deb produced for $name"; }
+
+    # Nothing reaches .work/artifacts before every check has passed:
+    # repo-build --local indexes that directory, so an artifact rejected
+    # here must not survive there from an earlier run either.
+    staging="$pkgwork/staging"
+    rm -rf "$staging"
+    mkdir -p "$staging"
+
+    # Every produced package name must be declared in the registry, so a
+    # recipe cannot quietly start shipping a package nobody knows about
+    # (repo-build would later reject it as outside the trust boundary).
+    load_registry_entry "$name"
+    staged_debs=()
+    for d in "${produced[@]}"; do
+        dname="$(dpkg-deb -f "$d" Package)"
+        if ! printf '%s\n' "$REG_DEB_NAMES" | grep -Fxq -- "$dname"; then
+            FAILED+=("$name")
+            die "$name produced '$dname' but the registry declares [$(printf '%s' "$REG_DEB_NAMES" | tr '\n' ' ')] — add it to deb_names in config/packages.toml"
+        fi
+        mv -f "$d" "$staging/"
+        staged_debs+=("$staging/$(basename "$d")")
+        step "staged $(basename "$d")"
+    done
+
+    log "[7/8] Package checks (on the staged artifacts)"
+    if [ ! -f "$PKG_RECIPE_DIR/debian/copyright" ]; then
+        FAILED+=("$name")
+        die "$PKG_RECIPE_DIR/debian/copyright is missing — every published package must ship one"
+    fi
+    for staged_deb in "${staged_debs[@]}"; do
+        dname="$(dpkg-deb -f "$staged_deb" Package)"
+        dpkg-deb --info "$staged_deb" > "$WORK_DIR/$dname.info.txt"
+        dpkg-deb --contents "$staged_deb" | tee "$WORK_DIR/$dname.contents.txt"
+        check_desktop_files "$staged_deb"
+        run_lintian "$staged_deb"
+    done
+    # Preserve the standard build records used to audit the environment
+    # and exact output checksums. They are release assets, not APT inputs.
+    while IFS= read -r -d '' metadata; do
+        cp -f "$metadata" "$ARTIFACTS_DIR/"
+        step "$(basename "$metadata")"
+    done < <(find "$pkgwork" -maxdepth 2 \( -name '*.buildinfo' -o -name '*.changes' \) -print0)
+
+    # promotion: only now do the artifacts become publishable. A stale
+    # .deb of the same name from a previous, worse build is replaced.
+    for staged_deb in "${staged_debs[@]}"; do
+        mv -f "$staged_deb" "$ARTIFACTS_DIR/"
+        step "$(basename "$staged_deb")"
+    done
+    if [ "$WITH_ORIG" = true ]; then
+        mv -f "$pkgwork/${name}_${upstream}.orig.tar.xz" "$ARTIFACTS_DIR/"
+    fi
+
+    if [ "$KEEP_WORK" = true ]; then
+        log "[8/8] Build tree kept in $pkgwork/build"
+    else
+        rm -rf "$pkgwork"
+    fi
+    log "OK: $name $fullver"
+done
+
+log "Artifacts in $ARTIFACTS_DIR:"
+ls -lh "$ARTIFACTS_DIR" | tail -n +2
+
+[ ${#FAILED[@]} -eq 0 ] || die "failed packages: ${FAILED[*]}"

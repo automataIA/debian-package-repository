@@ -1,0 +1,3 @@
+Test-Command: rust-relations-explorer --version || rust-relations-explorer --help
+Depends: @
+Restrictions: allow-stderr

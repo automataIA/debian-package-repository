@@ -1,0 +1,25 @@
+# search2md — collector metadata (the real packaging lives in debian/)
+name = "search2md"
+source = "~/search2md"
+github = "automataIA/search2md"
+
+# Version is read from [package].version in the source Cargo.toml
+version_source = "cargo"
+deb_revision = 1
+architecture = "amd64"
+section = "utils"
+priority = "optional"
+
+# Cargo specifics used by debian/rules
+cargo_package = "search2md-rs"
+cargo_bins = ["search2md"]
+smoke_command = "search2md --version"
+
+description = "Search the web and convert results or pages to Markdown"
+long_description = """
+ search2md is a command line tool that queries web search engines and
+ converts result lists or single pages into clean Markdown, cached
+ locally for follow-up reads. It supports DuckDuckGo, Bing and other
+ bang-prefixed providers and is designed to be consumed by coding
+ agents and documentation pipelines.
+"""

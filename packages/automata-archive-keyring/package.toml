@@ -1,0 +1,25 @@
+# automata-archive-keyring — bootstrap package for APT users.
+#
+# Ships the repository public key into /usr/share/keyrings/ and the
+# Deb822 sources file into /etc/apt/sources.list.d/, so that a single
+# `apt install ./automata-archive-keyring_*.deb` configures the whole
+# repository (Debian wiki: *-archive-keyring packages are the recommended
+# way to distribute and later update repository keys).
+name = "automata-archive-keyring"
+source = "."
+github = "automataIA/debian-package-repository"
+
+version_source = "static"
+version = "1.0.0"
+deb_revision = 1
+architecture = "all"
+section = "misc"
+priority = "important"
+
+description = "APT repository key and sources for packages.automataIA"
+long_description = """
+ Installs the OpenPGP public key of the automataIA APT repository into
+ /usr/share/keyrings/ and pins it via a Deb822 sources file with
+ Signed-By, configuring apt to fetch packages from the repository's
+ GitHub Pages endpoint.
+"""

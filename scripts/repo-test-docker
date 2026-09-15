@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# repo-test-docker — end-to-end install test of public/ in real distros.
+#
+# Serves public/ with nginx on a private docker network and, for every
+# distribution of the matrix, does what a user does: install the keyring
+# package, point it at the local endpoint, apt update (which verifies the
+# OpenPGP signature) and install every package the repository publishes.
+#
+# Usage: scripts/repo-test-docker [options]
+#
+# Options:
+#   --distros "img [img...]"  images to test (default: bookworm, trixie,
+#                             jammy, noble)
+#   --allow-fail <img>        an install failure on this image is expected
+#                             (repeatable; the run still reports it)
+#   --keep                    keep the nginx container and network running
+#   -h, --help                show this help
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+DISTROS="debian:bookworm debian:trixie ubuntu:22.04 ubuntu:24.04"
+ALLOW_FAIL=()
+KEEP=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --distros) DISTROS="${2:?--distros needs a value}"; shift;;
+        --allow-fail) ALLOW_FAIL+=("${2:?--allow-fail needs an image}"); shift;;
+        --keep) KEEP=true;;
+        -h|--help) usage 0;;
+        *) usage 2;;
+    esac
+    shift
+done
+
+have docker || die "docker not found — this test needs a working docker daemon"
+docker info >/dev/null 2>&1 || die "cannot talk to the docker daemon (permissions? service down?)"
+[ -f "$PUBLIC_DIR/dists/stable/main/binary-amd64/Packages" ] \
+    || die "no repository in $PUBLIC_DIR — run scripts/repo-build first"
+
+NET="automata-apt-test"
+SRV="automata-apt-srv"
+
+cleanup() {
+    [ "$KEEP" = true ] && return 0
+    docker rm -f "$SRV" >/dev/null 2>&1 || true
+    docker network rm "$NET" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+log "Starting the APT endpoint (nginx over public/)"
+docker rm -f "$SRV" >/dev/null 2>&1 || true
+docker network create "$NET" >/dev/null 2>&1 || true
+docker run -d --name "$SRV" --network "$NET" --network-alias aptsrv \
+    -v "$PUBLIC_DIR:/usr/share/nginx/html:ro" nginx:alpine >/dev/null
+step "serving $PUBLIC_DIR as http://aptsrv/"
+
+# The guest script runs unchanged in every image: it discovers the keyring
+# .deb and the package list from the signed index, so adding a package to
+# the repository automatically adds it to this test.
+GUEST="$WORK_DIR/repo-test-docker.guest.sh"
+SMOKE="$WORK_DIR/repo-test-docker.smoke.tsv"
+: > "$SMOKE"
+while IFS= read -r name; do
+    load_registry_entry "$name"
+    [ "$REG_ENABLED" = true ] || continue
+    [ -n "$REG_RECIPE_DIR" ] || continue
+    command="$(toml_get "$REG_RECIPE_DIR/package.toml" smoke_command || true)"
+    [ -n "$command" ] || continue
+    case "$command" in *$'\n'*|*$'\t'*) die "$name: smoke_command may not contain tabs or newlines";; esac
+    while IFS= read -r deb_name; do
+        [ -n "$deb_name" ] && printf '%s\t%s\n' "$deb_name" "$command" >> "$SMOKE"
+    done <<< "$REG_DEB_NAMES"
+done < <(list_packages)
+cat > "$GUEST" <<'EOF'
+set -u
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+echo "== $PRETTY_NAME (glibc $(ldd --version | head -1 | awk '{print $NF}'))"
+
+apt-get update -qq >/dev/null 2>&1 || true
+apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 \
+    || { echo "FATAL: cannot install curl in the image"; exit 90; }
+
+IDX=http://aptsrv/dists/stable/main/binary-amd64/Packages
+KPATH=$(curl -sf "$IDX" | awk '/^Package: automata-archive-keyring/ { f=1 } f && /^Filename: / { print $2; exit }')
+[ -n "$KPATH" ] || { echo "FATAL: keyring package not found in the index"; exit 91; }
+curl -sfO "http://aptsrv/$KPATH" || { echo "FATAL: cannot download $KPATH"; exit 92; }
+dpkg -i "$(basename "$KPATH")" >/dev/null || { echo "FATAL: keyring package does not install"; exit 93; }
+echo "keyring: installed $(basename "$KPATH")"
+
+# the shipped .sources points at GitHub Pages: redirect it to the local
+# endpoint, everything else (Signed-By, suite, component) stays as shipped
+SRC=/etc/apt/sources.list.d/automata.sources
+sed -i 's#https://[^ ]*debian-package-repository/#http://aptsrv/#' "$SRC"
+
+if apt-get update -o Dir::Etc::sourcelist="$SRC" -o Dir::Etc::sourceparts=/dev/null \
+       -o APT::Get::List-Cleanup=0 > /tmp/upd.log 2>&1; then
+    echo "apt update: OK (InRelease signature verified against the shipped keyring)"
+else
+    echo "apt update: FAILED"; tail -5 /tmp/upd.log; exit 94
+fi
+
+PKGS=$(curl -sf "$IDX" | awk '/^Package: / { print $2 }' | grep -v '^automata-archive-keyring$' | sort -u)
+[ -n "$PKGS" ] || { echo "FATAL: no packages in the index besides the keyring"; exit 95; }
+
+rc=0
+for p in $PKGS; do
+    # no -qq: on failure the unmet-dependency line is the whole point
+    if apt-get install -y "$p" > /tmp/i.log 2>&1; then
+        n=$(dpkg -L "$p" | grep -c '^/usr/bin/' || true)
+        echo "install $p: OK ($n binaries)"
+        for b in $(dpkg -L "$p" | grep '^/usr/bin/'); do
+            [ -x "$b" ] || { echo "  BROKEN: $b is not executable"; rc=1; }
+        done
+        smoke=$(awk -F '\t' -v package="$p" '$1 == package { sub(/^[^\t]*\t/, ""); print; exit }' /smoke.tsv)
+        if [ -z "$smoke" ]; then
+            echo "  BROKEN: no smoke command declared for $p"; rc=1
+        elif bash -eu -o pipefail -c "$smoke" > /tmp/smoke.log 2>&1; then
+            echo "  smoke $p: OK"
+        else
+            echo "  smoke $p: FAILED"; tail -10 /tmp/smoke.log | sed 's/^/    /'; rc=1
+        fi
+        apt-get purge -y -qq "$p" >/dev/null 2>&1 || { echo "  purge $p: FAILED"; rc=1; }
+    else
+        echo "install $p: FAILED"
+        grep -E 'Depends:|but it is not|not installable|^E:' /tmp/i.log | head -6 | sed 's/^/  /'
+        rc=1
+    fi
+done
+exit $rc
+EOF
+
+overall=0
+declare -a SUMMARY=()
+for img in $DISTROS; do
+    log "Testing $img"
+    if docker run --rm --network "$NET" -v "$GUEST:/guest.sh:ro" -v "$SMOKE:/smoke.tsv:ro" "$img" \
+           bash /guest.sh; then
+        SUMMARY+=("OK       $img")
+    else
+        if printf '%s\n' "${ALLOW_FAIL[@]:-}" | grep -qx -- "$img"; then
+            SUMMARY+=("EXPECTED-FAIL $img")
+            warn "$img failed, as declared with --allow-fail"
+        else
+            SUMMARY+=("FAIL     $img")
+            overall=1
+        fi
+    fi
+done
+
+log "Result"
+printf '    %s\n' "${SUMMARY[@]}"
+[ "$overall" = 0 ] || die "at least one distribution failed"
+if [ ${#ALLOW_FAIL[@]} -eq 0 ]; then
+    log "All tested distributions install the published packages"
+else
+    log "Tested distributions OK, except the ones declared with --allow-fail"
+fi

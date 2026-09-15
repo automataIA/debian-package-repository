@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# build-in-docker — run scripts/build inside a Debian bookworm container.
+#
+# Rationale: the build distribution sets the glibc floor of the produced
+# binaries. Built on noble a Rust binary requires libc6 (>= 2.39) and is
+# uninstallable on Debian 12; built on bookworm the same source produces
+# one artifact that installs on bookworm, trixie, noble and Pop!_OS.
+#
+# The container mounts this repository read-write (artifacts land in
+# .work/artifacts as usual) and every upstream source read-only, at the
+# SAME absolute paths as on the host, so config/packages.toml needs no
+# translation. It runs as the calling user, so nothing ends up root-owned.
+#
+# Usage: scripts/build-in-docker [build options] <name> [<name>...]
+#        scripts/build-in-docker --all
+#   --rebuild-image   rebuild the container image before building
+#   every other option is passed through to scripts/build
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+IMAGE="automata-deb-build:bookworm"
+DOCKERFILE="$REPO_ROOT/docker/build-bookworm.Dockerfile"
+REBUILD=false
+ARGS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --rebuild-image) REBUILD=true;;
+        -h|--help) usage 0;;
+        *) ARGS+=("$arg");;
+    esac
+done
+[ ${#ARGS[@]} -gt 0 ] || usage 2
+
+have docker || die "docker not found — this wrapper needs a working docker daemon"
+docker info >/dev/null 2>&1 || die "cannot talk to the docker daemon (permissions? service down?)"
+
+if [ "$REBUILD" = true ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    log "Building the build image $IMAGE"
+    docker build -t "$IMAGE" -f "$DOCKERFILE" "$REPO_ROOT/docker"
+fi
+
+load_repo_config
+
+# Mount every upstream source of the registry read-only: the build copies
+# them into .work anyway, and a read-only mount makes "the upstream tree
+# is never modified" a property of the sandbox, not just of the script.
+MOUNTS=()
+while IFS= read -r n; do
+    load_registry_entry "$n"
+    [ "$REG_ENABLED" = "true" ] || continue
+    [ -n "$REG_PATH" ] || continue
+    src="$REG_PATH"   # already expanded by load_registry_entry
+    [ -d "$src" ] || continue
+    [ "$src" = "$REPO_ROOT" ] && continue
+    MOUNTS+=( -v "$src:$src:ro" )
+done < <(list_packages)
+
+# Match the host's global ignore policy when deciding whether a source is
+# clean. Only the ignore file is exposed (never ~/.gitconfig or credentials).
+HOST_GIT_EXCLUDES="$(git config --global --get core.excludesfile 2>/dev/null || true)"
+if [ -z "$HOST_GIT_EXCLUDES" ] && [ -f "$HOME/.config/git/ignore" ]; then
+    HOST_GIT_EXCLUDES="$HOME/.config/git/ignore"
+fi
+GIT_IGNORE_ARGS=()
+if [ -n "$HOST_GIT_EXCLUDES" ] && [ -f "$HOST_GIT_EXCLUDES" ]; then
+    GIT_IGNORE_ARGS=(
+        -v "$HOST_GIT_EXCLUDES:/tmp/host-git-excludes:ro"
+        -e GIT_CONFIG_COUNT=1
+        -e GIT_CONFIG_KEY_0=core.excludesFile
+        -e GIT_CONFIG_VALUE_0=/tmp/host-git-excludes
+    )
+fi
+
+# cargo needs a writable CARGO_HOME; keep it in .work so it is cached
+# between runs and removed by scripts/clean
+CARGO_HOME_DIR="$WORK_DIR/cargo-home"
+CACHE_HOME_DIR="$WORK_DIR/cache-home"
+mkdir -p "$CARGO_HOME_DIR" "$CACHE_HOME_DIR"
+
+log "Building ${ARGS[*]} inside $IMAGE"
+docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -e HOME="$HOME" \
+    -e CARGO_HOME="$CARGO_HOME_DIR" \
+    -e XDG_CACHE_HOME="$CACHE_HOME_DIR" \
+    -e APT_TOOLS_DIR="$WORK_DIR/tools-bookworm" \
+    -v "$REPO_ROOT:$REPO_ROOT" \
+    "${MOUNTS[@]}" \
+    "${GIT_IGNORE_ARGS[@]}" \
+    -w "$REPO_ROOT" \
+    "$IMAGE" \
+    scripts/build "${ARGS[@]}"
+
+log "Artifacts in $ARTIFACTS_DIR (glibc floor: bookworm)"

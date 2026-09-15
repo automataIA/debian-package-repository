@@ -1,0 +1,21 @@
+# sir-bone-rs — collector metadata (the real packaging lives in debian/)
+name = "sir-bone-rs"
+source = "~/sir-bone-rs"
+github = "automataIA/sir-bone-rs"
+
+version_source = "cargo"
+deb_revision = 1
+architecture = "amd64"
+section = "devel"
+priority = "optional"
+
+cargo_bins = ["sirbone"]
+smoke_command = "sirbone --help"
+
+description = "AI coding agent in Rust with LLM streaming, tools, REPL and TUI"
+long_description = """
+ sir-bone is a from-scratch AI coding agent written in Rust: it streams
+ LLM responses, runs tools (bash, file operations, web fetch) and offers
+ REPL and TUI modes. It supports Anthropic and OpenAI-compatible
+ providers, prompt caching, extended thinking and MCP servers.
+"""

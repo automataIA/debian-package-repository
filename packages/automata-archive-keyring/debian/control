@@ -1,0 +1,18 @@
+Source: automata-archive-keyring
+Section: misc
+Maintainer: Automata Packaging <53933533+automataIA@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://automataia.github.io/debian-package-repository/
+
+Package: automata-archive-keyring
+Architecture: all
+Priority: important
+Depends: ${misc:Depends}, apt
+Description: APT repository key and sources for packages.automataIA
+ Installs the OpenPGP public key of the automataIA APT repository into
+ /usr/share/keyrings/ and pins it via a Deb822 sources file with
+ Signed-By, configuring apt to fetch packages from the repository's
+ GitHub Pages endpoint.

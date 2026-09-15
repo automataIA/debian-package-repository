@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# repo-build — (re)build the local APT repository and the public/ output.
+#
+# The repository is rebuilt from scratch on every run (idempotent, self
+# healing): candidates are collected from GitHub Releases (or local
+# artifacts), validated against the central registry, and for each
+# package name the highest Debian version (dpkg semantics) is included
+# exactly once. Then dists/ is signed and exported to public/.
+#
+# Sources of .deb files:
+#   (default)        GitHub Releases of every registry entry with a
+#                    `github` repository — works on a clean CI runner,
+#                    no recipes or local sources required
+#   --local          only .work/artifacts/*.deb produced by scripts/build
+#   --unsigned       skip GPG signature (test only; apt will NOT trust it)
+#
+# Usage: scripts/repo-build [--local] [--unsigned]
+# The repository is always rebuilt from every enabled registry entry. A
+# package filter would silently unpublish everything else.
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+FROM_LOCAL=false
+UNSIGNED=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --local) FROM_LOCAL=true;;
+        --unsigned) UNSIGNED=true;;
+        -h|--help) usage 0;;
+        -*) usage 2;;
+        *) die "package filters are unsafe for a from-scratch repository rebuild: $1";;
+    esac
+    shift
+done
+
+load_repo_config
+require_reprepro
+
+if [ "$UNSIGNED" = false ]; then
+    [ -d "$GNUPG_HOME" ] || die "no signing key environment at $GNUPG_HOME — run scripts/keygen first (or use --unsigned for a test build)"
+    # GNUPG_HOME is the config var, GNUPGHOME the env one
+    # shellcheck disable=SC2153
+    export GNUPGHOME="$GNUPG_HOME"
+    actual_fpr="$(gpg --batch --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^fpr/ { print $10; exit }')"
+    [ -n "$actual_fpr" ] || die "no secret key in $GNUPG_HOME — run scripts/keygen (or use --unsigned)"
+    if [ -n "$SIGNING_FPR" ]; then
+        [ "$actual_fpr" = "$SIGNING_FPR" ] \
+            || die "signing key in $GNUPG_HOME is $actual_fpr but config/repository.toml declares $SIGNING_FPR — regenerate the keyring or update the config"
+    fi
+    # one authority for the signing identity: conf/distributions must pin
+    # the same fingerprint the config declares (when it declares one)
+    if [ -n "$SIGNING_FPR" ] && [ -f "$REPO_DIR/conf/distributions" ]; then
+        signwith="$(awk -F': ' '$1 == "SignWith" { print $2 }' "$REPO_DIR/conf/distributions")"
+        [ "$signwith" = "$SIGNING_FPR" ] \
+            || die "repo/conf/distributions signs with '$signwith' but the configured fingerprint is '$SIGNING_FPR' — keep them in sync"
+    fi
+else
+    warn "building an UNSIGNED repository (apt-secure will refuse it)"
+fi
+
+# ------------------------------------------------------------- incoming ---
+
+rm -rf "$INCOMING_DIR"
+mkdir -p "$INCOMING_DIR"
+
+# Assets are staged per registry entry ($INCOMING_DIR/<entry>/), never in
+# one shared directory: the entry a .deb came from is what binds it to the
+# package names it is allowed to carry. A single pile would let a
+# compromised upstream publish a .deb named after somebody else's package
+# (with a very high version) and have it accepted and signed.
+if [ "$FROM_LOCAL" = true ]; then
+    log "Collecting local artifacts from $ARTIFACTS_DIR"
+    # local artifacts have no upstream repository to bind them to: their
+    # provenance is scripts/build, which already refused any package name
+    # not declared in the recipe's registry entry
+    mkdir -p "$INCOMING_DIR/_local"
+    if [ -d "$ARTIFACTS_DIR" ]; then
+        find "$ARTIFACTS_DIR" -maxdepth 1 -name '*.deb' -exec cp {} "$INCOMING_DIR/_local/" \; 2>/dev/null || true
+    fi
+else
+    have gh || die "gh CLI not found — needed to download release assets (or use --local)"
+    log "Downloading .deb assets from GitHub Releases (registry entries only)"
+    DL_FAILED=()
+    while IFS= read -r n; do
+        load_registry_entry "$n"
+        [ "$REG_ENABLED" = "true" ] || continue
+        [ -n "$REG_GITHUB" ] || { warn "$n: registry entry has no 'github' repository — skipping"; continue; }
+        step "releases of $REG_GITHUB"
+        entry_dir="$INCOMING_DIR/$n"
+        mkdir -p "$entry_dir"
+        # ordering does not matter here: selection below picks the highest
+        # Debian version explicitly
+        if ! tags="$(gh release list --repo "$REG_GITHUB" --limit 100 --json tagName --jq '.[].tagName' 2>&1)"; then
+            warn "$n: cannot list the releases of $REG_GITHUB: $tags"
+            DL_FAILED+=("$n")
+            continue
+        fi
+        [ -n "$tags" ] || { step "$n: no releases yet"; continue; }
+        while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            # ask first: a release without .deb assets is normal, a failed
+            # download is not, and `gh release download` cannot tell the
+            # two apart through its exit status
+            if ! assets="$(gh release view "$tag" --repo "$REG_GITHUB" --json assets --jq '[.assets[].name] | join(" ")' 2>&1)"; then
+                warn "$n: cannot read the assets of $tag: $assets"
+                DL_FAILED+=("$n")
+                continue
+            fi
+            # ".deb " with the trailing space: an asset called foo.debug
+            # is not a Debian package
+            case " $assets " in *".deb "*) ;; *) continue;; esac
+            if ! out="$(gh release download "$tag" --repo "$REG_GITHUB" --pattern '*.deb' \
+                            --dir "$entry_dir" --clobber 2>&1)"; then
+                warn "$n: downloading the .deb assets of $tag failed: $out"
+                DL_FAILED+=("$n")
+            fi
+        done <<< "$tags"
+    done < <(list_packages)
+    if [ ${#DL_FAILED[@]} -gt 0 ]; then
+        # publishing a repository that is missing packages because of a
+        # transient network error would silently un-publish them for every
+        # user of the suite
+        die "release assets could not be downloaded for: $(printf '%s ' "${DL_FAILED[@]}")— refusing to publish a partial repository"
+    fi
+fi
+
+# --------------------------------------------------------- validation ---
+
+# Validate every candidate against the registry before it can reach the
+# signed repository: the upstream repos are part of this repository's
+# trust boundary, so a stray or hostile asset must not be includable.
+# For a downloaded asset the check is per entry: it may only carry one of
+# the deb_names declared for the very repository it came from.
+VALID_DIR="$WORK_DIR/valid"
+rm -rf "$VALID_DIR"
+mkdir -p "$VALID_DIR"
+
+arch_allowed() {
+    # arch:all packages are valid for every configured architecture
+    [ "$1" = "all" ] && return 0
+    case " $REPO_ARCHS " in *" $1 "*) return 0;; esac
+    return 1
+}
+
+for entry_dir in "$INCOMING_DIR"/*/; do
+    [ -d "$entry_dir" ] || continue
+    entry="$(basename "$entry_dir")"
+    # the union of all registry names, used only for local artifacts
+    allowed=""
+    if [ "$entry" = "_local" ]; then
+        while IFS= read -r n; do
+            load_registry_entry "$n"
+            [ "$REG_ENABLED" = true ] || continue
+            allowed="$allowed$REG_DEB_NAMES"$'\n'
+        done < <(list_packages)
+        origin_desc="the registry"
+    else
+        load_registry_entry "$entry"
+        allowed="$REG_DEB_NAMES"
+        origin_desc="$REG_GITHUB (entry $entry)"
+    fi
+    while IFS= read -r -d '' deb; do
+        pkg="$(dpkg-deb -f "$deb" Package)"
+        arch="$(dpkg-deb -f "$deb" Architecture)"
+        if ! printf '%s\n' "$allowed" | grep -Fxq -- "$pkg"; then
+            warn "rejected $(basename "$deb"): package '$pkg' is not declared by $origin_desc (trust boundary)"
+            continue
+        fi
+        if ! arch_allowed "$arch"; then
+            warn "rejected $(basename "$deb"): architecture '$arch' not in [$REPO_ARCHS]"
+            continue
+        fi
+        cp "$deb" "$VALID_DIR/"
+        step "accepted $(basename "$deb") from $origin_desc"
+    done < <(find "$entry_dir" -maxdepth 1 -name '*.deb' -print0)
+done
+
+# An enabled registry entry is a publication promise. Refuse to replace the
+# live repository if any selected entry (or one of its declared binary
+# packages) has no valid artifact; otherwise a transient or incomplete
+# release would silently remove software from users' APT view.
+while IFS= read -r n; do
+    load_registry_entry "$n"
+    [ "$REG_ENABLED" = true ] || continue
+    while IFS= read -r expected; do
+        [ -n "$expected" ] || continue
+        present=false
+        while IFS= read -r -d '' deb; do
+            if [ "$(dpkg-deb -f "$deb" Package 2>/dev/null || true)" = "$expected" ]; then
+                present=true
+                break
+            fi
+        done < <(find "$VALID_DIR" -maxdepth 1 -name '*.deb' -print0)
+        [ "$present" = true ] || die "$n: required package '$expected' has no valid artifact — refusing to publish a partial repository"
+    done <<< "$REG_DEB_NAMES"
+done < <(list_packages)
+
+# ------------------------------------------------- selection (newest) ---
+
+# For each package name keep only the highest Debian version, compared
+# with dpkg semantics (epoch/tilde/revisions), so "newest wins" is exact.
+SELECTED_DIR="$WORK_DIR/selected"
+rm -rf "$SELECTED_DIR"
+mkdir -p "$SELECTED_DIR"
+
+any_candidate=false
+while IFS= read -r -d '' deb; do
+    pkg="$(dpkg-deb -f "$deb" Package)"
+    ver="$(dpkg-deb -f "$deb" Version)"
+    printf '%s\t%s\n' "$ver" "$deb" >> "$SELECTED_DIR/$pkg.list"
+    any_candidate=true
+done < <(find "$VALID_DIR" -maxdepth 1 -name '*.deb' -print0)
+
+[ "$any_candidate" = true ] || die "no .deb files collected — build something first (scripts/build) or check Releases"
+
+winners=()
+for list in "$SELECTED_DIR"/*.list; do
+    winner="$("$REPO_ROOT/scripts/lib/debver-max" < "$list")"
+    cp "$winner" "$SELECTED_DIR/$(basename "$winner")"
+    rm -f "$list"
+    winners+=("$(basename "$winner")")
+    step "selected: $(basename "$winner")"
+done
+[ ${#winners[@]} -ge 1 ] || die "no valid candidates selected"
+
+# ------------------------------------------------------------- reprepro ---
+
+log "Rebuilding repository (codename $REPO_CODENAME)"
+rm -rf "$REPO_DIR/db" "$REPO_DIR/dists" "$REPO_DIR/pool" "$REPO_DIR/incoming"
+[ -f "$REPO_DIR/conf/distributions" ] || die "missing $REPO_DIR/conf/distributions"
+
+for deb in "${winners[@]}"; do
+    step "including $deb"
+    reprepro -b "$REPO_DIR" includedeb "$REPO_CODENAME" "$SELECTED_DIR/$deb"
+done
+reprepro -b "$REPO_DIR" export
+
+# --------------------------------------------------------------- public ---
+
+log "Assembling public/ output for GitHub Pages"
+find "$PUBLIC_DIR" -mindepth 1 -not -name '.gitkeep' -delete
+mkdir -p "$PUBLIC_DIR"
+cp -r "$REPO_DIR/dists" "$REPO_DIR/pool" "$PUBLIC_DIR/"
+
+keyfile="$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE"
+if [ -f "$keyfile" ]; then
+    cp "$keyfile" "$PUBLIC_DIR/$KEYRING_PUBLIC_FILE"
+else
+    warn "public key $keyfile not found — run scripts/keygen and commit it"
+fi
+
+render_repo_tokens | render_template "$TEMPLATES_DIR/index.html" "$PUBLIC_DIR/index.html"
+cp "$REPO_ROOT/apt/automata.sources" "$PUBLIC_DIR/automata.sources"
+
+# ------------------------------------------------------------- summary ---
+
+log "Repository contents:"
+reprepro -b "$REPO_DIR" list "$REPO_CODENAME" | sed 's/^/    /'
+log "Done. Public output in $PUBLIC_DIR (deploy target: $PAGES_URL)"

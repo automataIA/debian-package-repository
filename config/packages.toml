@@ -1,0 +1,96 @@
+# Explicit registry of packagizable projects.
+#
+# Nothing is auto-discovered from the home directory on purpose: the
+# collector must know exactly which projects are packaged, where their
+# source lives and which recipe under packages/ produces the .deb.
+#
+# Fields:
+#   path      = local upstream source directory (read-only, never modified)
+#   recipe    = directory under packages/ holding package.toml + debian/
+#   github    = owner/repo used for Releases (archive of the .deb files)
+#   enabled   = false entries are skipped by build/build-all (documentation only)
+
+[packages.search2md]
+path = "~/search2md"
+recipe = "search2md"
+github = "automataIA/search2md"
+enabled = true
+
+[packages.rag-bone-rs]
+path = "~/rag-bone-rs"
+recipe = "rag-bone-rs"
+github = "automataIA/rag-bone-rs"
+# The upstream dynamic-runtime change is published; the Bookworm package
+# bundles the checksum-pinned compatible ONNX Runtime.
+enabled = true
+
+[packages.sir-bone-rs]
+path = "~/sir-bone-rs"
+recipe = "sir-bone-rs"
+github = "automataIA/sir-bone-rs"
+# Enable together with its first published .deb release.
+enabled = false
+
+[packages.graphlib]
+path = "~/graph-librarian-rs"
+recipe = "graphlib"
+github = "automataIA/graph-librarian-rs"
+# Enable together with its first published .deb release.
+enabled = false
+
+[packages.rust-relations-explorer]
+path = "~/knowledge-rs"
+recipe = "rust-relations-explorer"
+github = "automataIA/rust-relations-explorer"
+enabled = true
+
+[packages.kan-bone-rs]
+# COSMIC desktop workspace (libcosmic): apps/kanban-app + apps/kanban-applet.
+# Both binaries ship in a single .deb — the applet is only useful next to
+# the application, and the collector builds one .deb per recipe.
+path = "~/kan-bone-rs"
+recipe = "kan-bone-rs"
+github = "automataIA/kan-bone-rs"
+enabled = true
+
+[packages.automata-archive-keyring]
+# Special package: ships the repository public key + APT sources file.
+# Its source is this repository itself.
+path = "."
+recipe = "automata-archive-keyring"
+github = "automataIA/debian-package-repository"
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Download-only entries (no recipe): repo-build fetches their .deb assets
+# from GitHub Releases without building locally. They require an explicit
+# `deb_name` so release assets can be validated against the registry.
+# Disabled until each project publishes its first .deb release.
+#
+# Phase 2 candidates (recipes not written yet). Keep them disabled until their
+# packaging recipe or first validated .deb release is available.
+# ---------------------------------------------------------------------------
+
+[packages.mcp-rs]
+path = "~/mcp-rs-doc-md"
+recipe = "mcp-rs"
+github = "automataIA/mcp-rustdoc-parser"
+enabled = false
+
+[packages.gymnasium-rs]
+path = "~/gymnasium-rs"
+recipe = "gymnasium-rs"
+github = "automataIA/gymnasium-rs"
+enabled = false
+
+[packages.grunt-bone-rs]
+path = "~/grunt-bone-rs"
+github = "automataIA/grunt-bone-rs"
+deb_name = "grunt-bone-rs"
+enabled = false
+
+[packages.epub-reader-rs]
+path = "~/epub-reader-rs"
+github = "automataIA/epub-reader-rs"
+deb_name = "epub-reader-cosmic"
+enabled = false

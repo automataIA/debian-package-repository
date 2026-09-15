@@ -1,0 +1,32 @@
+# Build state and generated artifacts (never commit .deb files to Git)
+/.work/
+
+# Generated APT repository + Pages output (rebuilt from GitHub Releases)
+/public/*
+!/public/.gitkeep
+
+# reprepro internal state generated during builds
+/repo/db/
+/repo/dists/
+/repo/pool/
+/repo/incoming/
+
+# Maintainer-only notes. These paths are intentionally excluded from the
+# public repository; keep durable public documentation in README.md instead.
+/docs/
+/info/
+/cronologia.md
+
+# downloaded .deb assets during local repo builds
+/incoming/
+
+# GPG artifacts (private keys must NEVER be committed — extensions are a
+# heuristic; scripts/selftest also scans tracked files for secret packets)
+*.key
+*.keys
+*.asc
+*.gpg
+*.private
+*.secret
+gnupg/
+private/

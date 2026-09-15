@@ -1,0 +1,5 @@
+# graphlib reaches the pure-Rust unsafe-libyaml implementation through
+# serde_yaml. Cargo links Rust dependencies statically, so there is no
+# system shared library that this recipe can select instead. Security
+# updates therefore require rebuilding and republishing this binary.
+graphlib: embedded-library libyaml [usr/bin/graphlib]

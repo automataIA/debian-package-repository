@@ -1,0 +1,40 @@
+name: CI
+
+# Static checks and offline selftests: shell hygiene, config validity,
+# recipe structure, version-selection semantics, no-secret-in-git.
+# Real package builds happen on the maintainer machine (sources are local)
+# and repository publication in publish-apt.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Shellcheck all scripts
+        run: |
+          set -euo pipefail
+          for s in scripts/* scripts/lib/*; do
+            [ -f "$s" ] || continue
+            shellcheck -S warning -x "$s"
+          done
+
+      - name: Offline selftests
+        run: scripts/selftest
+
+      - name: Validate configuration and recipes
+        run: scripts/repo-test --structure-only

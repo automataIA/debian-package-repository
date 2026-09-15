@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# release — build a package and publish it as a GitHub Release.
+#
+# The .deb (+ deterministic orig tarball and SHA256SUMS) are attached to a
+# GitHub Release tagged <name>-v<version>-<revision> in the package's own
+# repository. The script then triggers publish-apt.yml in the central
+# repository explicitly: a release published in an application repository
+# CANNOT trigger that workflow by itself (GitHub release events are
+# repository-scoped).
+#
+# Provenance: releases require a CLEAN source (no --allow-dirty). The script
+# verifies that the exact local HEAD is already on origin, creates/pushes an
+# annotated tag at that commit when needed, then uses --verify-tag.
+#
+# Usage: scripts/release --all
+#        scripts/release [options] <name> [<name>...]
+#
+# Options:
+#   --all            release every enabled, recipe-backed registry entry
+#   --dry-run        build and print the gh commands without running them
+#   --no-rebuild     do not trigger the APT repository workflow afterwards
+#   --host-build     build on this machine instead of the bookworm container
+#                    (narrows the glibc floor: use only for debugging)
+#   -h, --help       show this help
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+DRY_RUN=false
+REBUILD=true
+HOST_BUILD=false
+NAMES=()
+BUILD_ALL=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --all) BUILD_ALL=true;;
+        --dry-run) DRY_RUN=true;;
+        --no-rebuild) REBUILD=false;;
+        --host-build) HOST_BUILD=true;;
+        -h|--help) usage 0;;
+        -*) usage 2;;
+        *) NAMES+=("$1");;
+    esac
+    shift
+done
+
+load_repo_config
+if [ "$BUILD_ALL" = true ]; then
+    [ ${#NAMES[@]} -eq 0 ] || die "--all cannot be combined with package names"
+    while IFS= read -r n; do
+        load_registry_entry "$n"
+        if [ "$REG_ENABLED" = true ] && [ -f "$REG_RECIPE_DIR/package.toml" ]; then
+            NAMES+=("$n")
+        fi
+    done < <(list_packages)
+fi
+[ ${#NAMES[@]} -gt 0 ] || { warn "nothing to release (registry empty or all entries disabled/recipe-less)"; exit 0; }
+
+have gh || die "gh CLI not found (https://cli.github.com)"
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated: run 'gh auth login'"
+
+# build each package without --allow-dirty: a release must come from a
+# committed source state. The build runs in the bookworm container by
+# default: the build distribution fixes the glibc floor of the artifact,
+# and a release built here on noble would be uninstallable on Debian 12.
+if [ "$HOST_BUILD" = true ]; then
+    warn "building on the host: the artifact inherits this distribution's glibc floor"
+    builder="$REPO_ROOT/scripts/build"
+else
+    builder="$REPO_ROOT/scripts/build-in-docker"
+fi
+log "Building (clean sources required): ${NAMES[*]}"
+"$builder" "${NAMES[@]}"
+
+for name in "${NAMES[@]}"; do
+    load_package "$name"
+    upstream="$(upstream_version "$PKG_SOURCE" "$PKG_VERSION_SOURCE")"
+    fullver="$upstream-$PKG_DEB_REVISION"
+    tag="${name}-v${fullver}"
+    orig="$ARTIFACTS_DIR/${name}_${upstream}.orig.tar.xz"
+    assets=()
+    while IFS= read -r expected; do
+        [ -n "$expected" ] || continue
+        found=""
+        for candidate in "$ARTIFACTS_DIR"/*.deb; do
+            [ -f "$candidate" ] || continue
+            if [ "$(dpkg-deb -f "$candidate" Package 2>/dev/null || true)" = "$expected" ] \
+                && [ "$(dpkg-deb -f "$candidate" Version 2>/dev/null || true)" = "$fullver" ]; then
+                [ -z "$found" ] || die "$name: multiple artifacts found for $expected $fullver"
+                found="$candidate"
+            fi
+        done
+        [ -n "$found" ] || die "$name: expected artifact missing for binary package $expected $fullver"
+        assets+=("$found")
+    done <<< "$REG_DEB_NAMES"
+    for metadata in "$ARTIFACTS_DIR/${name}_${fullver}"*.buildinfo "$ARTIFACTS_DIR/${name}_${fullver}"*.changes; do
+        [ -f "$metadata" ] && assets+=("$metadata")
+    done
+    [ -f "$orig" ] && assets+=("$orig")
+
+    repo="$PKG_GITHUB"
+    [ -n "$repo" ] || { warn "$name: no github repository in the registry — skipping"; continue; }
+
+    # provenance: the exact local HEAD must be published upstream
+    sha=""
+    if [ "$(git -C "$PKG_SOURCE" rev-parse --is-inside-work-tree 2>/dev/null || echo false)" = "true" ]; then
+        sha="$(git -C "$PKG_SOURCE" rev-parse HEAD)"
+        if ! git -C "$PKG_SOURCE" ls-remote origin 2>/dev/null | grep -q "$sha"; then
+            die "$PKG_SOURCE: HEAD $sha is not on origin — push the source before releasing"
+        fi
+        commitish="$sha"
+    else
+        commitish=""
+    fi
+
+    log "Releasing $name $fullver → $repo (tag $tag)"
+    notes="Automated Debian package build of $name $fullver.
+
+- Package: $name
+- Upstream version: $upstream
+- Debian revision: $PKG_DEB_REVISION
+- Architecture: $PKG_ARCH
+- Source commit: ${sha:-n/a}
+
+Install from the APT repository:
+    $PAGES_URL"
+
+    if [ "$DRY_RUN" = true ]; then
+        step "DRY-RUN: create annotated tag $tag at $commitish if absent; push it to origin"
+        step "DRY-RUN: gh release create '$tag' ${assets[*]} $ARTIFACTS_DIR/SHA256SUMS.$name.txt --verify-tag --target '$commitish'"
+        continue
+    fi
+
+    # Verify the immutable provenance link even on an idempotent retry. An
+    # existing release with matching bytes is not acceptable if its tag was
+    # moved to a different source commit.
+    remote_tag_sha="$(git -C "$PKG_SOURCE" ls-remote origin "refs/tags/$tag^{}" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+    [ -n "$remote_tag_sha" ] || remote_tag_sha="$(git -C "$PKG_SOURCE" ls-remote origin "refs/tags/$tag" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+    if [ -n "$remote_tag_sha" ]; then
+        [ "$remote_tag_sha" = "$sha" ] || die "$tag already exists on origin at $remote_tag_sha, expected $sha"
+    else
+        if git -C "$PKG_SOURCE" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            local_tag_sha="$(git -C "$PKG_SOURCE" rev-list -n1 "$tag")"
+            [ "$local_tag_sha" = "$sha" ] || die "local tag $tag points at $local_tag_sha, expected $sha"
+        else
+            git -C "$PKG_SOURCE" tag -a "$tag" "$sha" -m "$name $fullver"
+        fi
+        git -C "$PKG_SOURCE" push origin "refs/tags/$tag"
+    fi
+
+    # SHA256SUMS over all assets of this release
+    sums="$ARTIFACTS_DIR/SHA256SUMS.$name.txt"
+    {
+        sha256sum "${assets[@]}"
+    } | sed "s|$ARTIFACTS_DIR/||" > "$sums"
+    assets+=("$sums")
+
+    if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+        # idempotent retry: accept an existing release only when the local
+        # artifact matches the remote asset byte-for-byte
+        identical=true
+        for asset in "${assets[@]}"; do
+            asset_name="$(basename "$asset")"
+            remote_sum="$(gh api "repos/$repo/releases/tags/$tag" \
+                            --jq ".assets[] | select(.name == \"$asset_name\") | .digest" 2>/dev/null \
+                            | sed 's/^sha256://' || true)"
+            local_sum="$(sha256sum "$asset" | awk '{ print $1 }')"
+            [ -n "$remote_sum" ] && [ "$remote_sum" = "$local_sum" ] || identical=false
+        done
+        if [ "$identical" = true ]; then
+            warn "release $tag already exists with identical assets — skipping"
+            continue
+        fi
+        die "release $tag already exists in $repo with different assets — bump deb_revision in $PKG_RECIPE_DIR/package.toml if you are re-packaging the same upstream version"
+    fi
+
+    gh release create "$tag" "${assets[@]}" \
+        --repo "$repo" \
+        --verify-tag \
+        --target "$commitish" \
+        --title "$name $fullver" \
+        --notes "$notes"
+    step "release created: https://github.com/$repo/releases/tag/$tag"
+done
+
+if [ "$DRY_RUN" = true ]; then
+    log "dry run complete — nothing published"
+    exit 0
+fi
+
+if [ "$REBUILD" = true ]; then
+    log "Triggering APT repository rebuild ($GH_OWNER/$GH_REPO)"
+    gh workflow run publish-apt.yml --repo "$GH_OWNER/$GH_REPO" --ref main \
+        || warn "could not trigger the workflow — run it manually from the Actions tab"
+    step "watch: gh run watch --repo $GH_OWNER/$GH_REPO \$(gh run list --repo $GH_OWNER/$GH_REPO --workflow publish-apt.yml -L1 --json databaseId --jq '.[0].databaseId')"
+fi
+
+log "Done. The APT repository refreshes at: $PAGES_URL"

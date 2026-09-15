@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# build-all — build every enabled package listed in config/packages.toml.
+#
+# Usage: scripts/build-all [options]
+# Options are forwarded to scripts/build (see scripts/build --help).
+
+set -euo pipefail
+exec "$(dirname "$0")/build" --all "$@"

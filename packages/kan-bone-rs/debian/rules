@@ -1,0 +1,45 @@
+#!/usr/bin/make -f
+# Prefer the rustup toolchain: crates may need a newer rustc than the
+# distribution default.
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+APP_ID := io.github.carcall.KanBone
+APPLET_ID := io.github.carcall.KanBoneApplet
+DESTDIR := debian/kan-bone-rs
+ICONDIR := $(DESTDIR)/usr/share/icons/hicolor/scalable/apps
+
+%:
+	dh $@
+
+# One cargo invocation for both crates, deliberately: in a single workspace
+# Cargo unifies libcosmic's features across members, so building them
+# separately would produce an applet without wgpu (upstream makes the same
+# point in scripts/install-dev.sh).
+override_dh_auto_build:
+	cargo build --release --locked -p kanban-app -p kanban-applet
+
+# Both binaries need a Wayland session; there is nothing runnable here.
+override_dh_auto_test:
+
+# Desktop entries and metainfo are named app.desktop / app.metainfo.xml in
+# the source tree and must land under their reverse-DNS id, so this is a
+# manual install rather than a debian/install file.
+override_dh_auto_install:
+	install -Dm0755 target/release/kanban-app $(DESTDIR)/usr/bin/kanban-app
+	install -Dm0755 target/release/kanban-applet $(DESTDIR)/usr/bin/kanban-applet
+	install -Dm0644 apps/kanban-app/resources/app.desktop \
+		$(DESTDIR)/usr/share/applications/$(APP_ID).desktop
+	install -Dm0644 apps/kanban-applet/resources/app.desktop \
+		$(DESTDIR)/usr/share/applications/$(APPLET_ID).desktop
+	# X-COSMIC is an additional menu category; freedesktop requires at least
+	# one registered main category as well.
+	sed -i 's/^Categories=X-COSMIC;$$/Categories=Utility;X-COSMIC;/' \
+		$(DESTDIR)/usr/share/applications/$(APPLET_ID).desktop
+	install -Dm0644 apps/kanban-app/resources/app.metainfo.xml \
+		$(DESTDIR)/usr/share/metainfo/$(APP_ID).metainfo.xml
+	install -Dm0644 apps/kanban-applet/resources/app.metainfo.xml \
+		$(DESTDIR)/usr/share/metainfo/$(APPLET_ID).metainfo.xml
+	for icon in apps/kanban-app/resources/icons/hicolor/scalable/apps/*.svg \
+	            apps/kanban-applet/resources/icons/hicolor/scalable/apps/*.svg; do \
+		install -Dm0644 "$$icon" "$(ICONDIR)/$$(basename $$icon)"; \
+	done

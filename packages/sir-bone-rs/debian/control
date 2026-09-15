@@ -1,0 +1,24 @@
+Source: sir-bone-rs
+Section: devel
+Maintainer: Automata Packaging <53933533+automataIA@users.noreply.github.com>
+# cargo/rustc are deliberately NOT Build-Depends: builds use the rustup
+# toolchain from ~/.cargo/bin (these crates need rustc >= 1.88, newer than
+# the distribution's). These are private binary recipes, not policy-style
+# rebuildable source packages — see README "Security and rebuildability".
+Build-Depends:
+ debhelper-compat (= 13),
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://github.com/automataIA/sir-bone-rs
+Vcs-Browser: https://github.com/automataIA/sir-bone-rs
+Vcs-Git: https://github.com/automataIA/sir-bone-rs.git
+
+Package: sir-bone-rs
+Architecture: amd64
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: AI coding agent in Rust with LLM streaming, tools, REPL and TUI
+ sir-bone is a from-scratch AI coding agent written in Rust: it streams
+ LLM responses, runs tools (bash, file operations, web fetch) and offers
+ REPL and TUI modes. It supports Anthropic and OpenAI-compatible
+ providers, prompt caching, extended thinking and MCP servers.

@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# keygen — create the dedicated OpenPGP key for signing the APT repository.
+#
+# Best practice (Debian wiki, apt-secure): a repository is signed with a
+# certificate created for that single purpose, never with your personal
+# key. The private key lives in its own GNUPGHOME (config keyring.gnupg_home,
+# default ~/.local/share/automata-apt/gnupg) and MUST never be committed.
+# The public half is exported to keyrings/ and committed so that users can
+# pin it via Signed-By.
+#
+# Usage: scripts/keygen [options]
+#   --fingerprint      print the fingerprint of an existing key and exit
+#   --export           (re)export the public key into keyrings/ and exit
+#   --passphrase-env   take the passphrase from APT_GPG_PASSPHRASE (default:
+#                      key is generated without passphrase, protected only
+#                      by filesystem permissions)
+#   -h, --help         show this help
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+MODE="create"
+USE_ENV_PASSPHRASE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --fingerprint) MODE="fingerprint";;
+        --export) MODE="export";;
+        --passphrase-env) USE_ENV_PASSPHRASE=true;;
+        -h|--help) usage 0;;
+        *) usage 2;;
+    esac
+done
+
+load_repo_config
+mkdir -p "$GNUPG_HOME" "$WORK_DIR" "$KEYRINGS_DIR"
+chmod 700 "$GNUPG_HOME"
+# GNUPG_HOME is the config variable, GNUPGHOME the gpg environment one
+# shellcheck disable=SC2153
+export GNUPGHOME="$GNUPG_HOME"
+
+fingerprint() {
+    gpg --batch --list-secret-keys --with-colons 2>/dev/null \
+        | awk -F: '/^fpr/ { print $10; exit }'
+}
+
+case "$MODE" in
+    fingerprint)
+        fpr="$(fingerprint)"
+        [ -n "$fpr" ] || die "no key in $GNUPGHOME yet — run scripts/keygen"
+        echo "$fpr"
+        ;;
+    export)
+        fpr="$(fingerprint)"
+        [ -n "$fpr" ] || die "no key in $GNUPGHOME yet — run scripts/keygen"
+        # binary export: usable both as apt Signed-By keyring and by gpgv
+        gpg --batch --export "$fpr" > "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE"
+        chmod 644 "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE"
+        log "public key exported to keyrings/$KEYRING_PUBLIC_FILE (fingerprint $fpr)"
+        step "commit it, then users can pin the repository with Signed-By"
+        ;;
+    create)
+        if [ -n "$(fingerprint)" ]; then
+            fpr="$(fingerprint)"
+            log "a signing key already exists in $GNUPGHOME"
+            step "fingerprint: $fpr"
+            step "regenerate deliberately: rm -rf '$GNUPGHOME' (destructive!)"
+            exit 0
+        fi
+
+        if [ "$USE_ENV_PASSPHRASE" = true ]; then
+            [ -n "${APT_GPG_PASSPHRASE:-}" ] || die "APT_GPG_PASSPHRASE is empty"
+        else
+            warn "key will be created WITHOUT passphrase (protected by file permissions only)."
+            step "For CI you can instead regenerate with APT_GPG_PASSPHRASE set:"
+            step "  APT_GPG_PASSPHRASE='...' scripts/keygen --passphrase-env"
+        fi
+
+        # the params file briefly holds the passphrase: strict umask,
+        # private temp file, unconditional cleanup
+        (
+            umask 077
+            params="$(mktemp "$WORK_DIR/keygen-params.XXXXXX")"
+            trap 'rm -f "$params"' EXIT
+            # pass the passphrase to the generator without shell/sed
+            # interpolation: the params file is written by python3 reading
+            # the secret from the environment
+            APT_GPG_PASSPHRASE="${APT_GPG_PASSPHRASE:-}" PROTECTED="$USE_ENV_PASSPHRASE" \
+            python3 - "$params" <<'PY'
+import os, pathlib, sys
+protected = os.environ["PROTECTED"] == "true"
+lines = [
+    "Key-Type: RSA",
+    "Key-Length: 3072",
+    "Key-Usage: sign cert",
+    "Subkey-Type: RSA",
+    "Subkey-Length: 3072",
+    "Subkey-Usage: sign",
+    "Name-Real: Automata APT Repository Signing Key",
+    "Name-Email: apt-repository@users.noreply.github.com",
+    "Expire-Date: 0",
+]
+body = "\n".join(lines) + "\n"
+if protected:
+    body += "Passphrase: %s\n" % os.environ["APT_GPG_PASSPHRASE"]
+else:
+    body += "%no-protection\n"
+pathlib.Path(sys.argv[1]).write_text(body)
+PY
+            gpg --batch --gen-key "$params"
+        )
+        fpr="$(fingerprint)"
+        [ -n "$fpr" ] || die "key generation failed"
+        log "generated key $fpr in $GNUPGHOME"
+
+        # remember the fingerprint in the config (handy, not secret)
+        if [ -z "$SIGNING_FPR" ]; then
+            sed -i "s|^signing_key_fingerprint = \"\"|signing_key_fingerprint = \"$fpr\"|" \
+                "$CONFIG_DIR/repository.toml"
+            step "fingerprint saved into config/repository.toml"
+        fi
+
+        # binary export: usable both as apt Signed-By keyring and by gpgv
+        gpg --batch --export "$fpr" > "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE"
+        chmod 644 "$KEYRINGS_DIR/$KEYRING_PUBLIC_FILE"
+        log "public key exported to keyrings/$KEYRING_PUBLIC_FILE"
+        step ""
+        step "GitHub Actions needs the private half as repository secrets."
+        step "RECOMMENDED (limits blast radius): export only the signing"
+        step "subkey, keeping the primary key offline on this machine:"
+        step "  gh secret set APT_GPG_PRIVATE_KEY --repo $GH_OWNER/$GH_REPO \\"
+        step "    < <(gpg --armor --export-secret-subkeys $fpr!)"
+        step "Alternative (full key, simpler but broader):"
+        step "  gh secret set APT_GPG_PRIVATE_KEY --repo $GH_OWNER/$GH_REPO \\"
+        step "    < <(gpg --armor --export-secret-keys $fpr)"
+        step "  (and, if you set a passphrase) gh secret set APT_GPG_PASSPHRASE"
+        ;;
+esac

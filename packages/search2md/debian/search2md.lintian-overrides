@@ -1,0 +1,7 @@
+# A Rust binary links every dependency statically, including the C
+# libraries some crates vendor: there is no dynamic libyaml to link
+# against and no way to make cargo use the system one here. The tag is
+# meant for archive packages, where a shared library must be shared so
+# the security team can fix it once; this repository rebuilds and
+# republishes the whole binary on every upstream release instead.
+search2md: embedded-library libyaml [usr/bin/search2md]

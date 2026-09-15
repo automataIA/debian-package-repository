@@ -1,0 +1,3 @@
+Test-Command: rag-bone --version || rag-bone --help
+Depends: @
+Restrictions: allow-stderr

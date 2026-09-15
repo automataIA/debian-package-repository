@@ -1,0 +1,24 @@
+Source: graphlib
+Section: utils
+Maintainer: Automata Packaging <53933533+automataIA@users.noreply.github.com>
+# cargo/rustc are deliberately NOT Build-Depends: builds use the rustup
+# toolchain from ~/.cargo/bin (these crates need rustc >= 1.88, newer than
+# the distribution's). These are private binary recipes, not policy-style
+# rebuildable source packages — see README "Security and rebuildability".
+Build-Depends:
+ debhelper-compat (= 13),
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://github.com/automataIA/graph-librarian-rs
+Vcs-Browser: https://github.com/automataIA/graph-librarian-rs
+Vcs-Git: https://github.com/automataIA/graph-librarian-rs.git
+
+Package: graphlib
+Architecture: amd64
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Offline GraphRAG document library agent (vector search + knowledge graph)
+ graphlib is a fully offline GraphRAG system: it combines vector search
+ over embeddings with knowledge-graph structures (entities and
+ relationships) to provide deep, context-aware answers from local
+ document collections without any network access.

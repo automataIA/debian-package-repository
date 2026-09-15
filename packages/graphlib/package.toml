@@ -1,0 +1,21 @@
+# graphlib — collector metadata (the real packaging lives in debian/)
+name = "graphlib"
+source = "~/graph-librarian-rs"
+github = "automataIA/graph-librarian-rs"
+
+version_source = "cargo"
+deb_revision = 1
+architecture = "amd64"
+section = "utils"
+priority = "optional"
+
+cargo_bins = ["graphlib"]
+smoke_command = "graphlib --help"
+
+description = "Offline GraphRAG document library agent (vector search + knowledge graph)"
+long_description = """
+ graphlib is a fully offline GraphRAG system: it combines vector search
+ over embeddings with knowledge-graph structures (entities and
+ relationships) to provide deep, context-aware answers from local
+ document collections without any network access.
+"""

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# selftest — offline tests for the repository's pure components.
+#
+# No network, no packaging tools required. Covers: Debian version
+# selection (debver-max), template rendering, deterministic changelog
+# generation, upstream version extraction, and guarantees that no secret
+# key material is tracked in Git.
+#
+# Usage: scripts/selftest
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+. "$(dirname "$0")/lib/common.sh"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+load_repo_config
+fail=0
+
+check_eq() { # <description> <expected> <actual>
+    if [ "$2" = "$3" ]; then
+        step "OK: $1"
+    else
+        warn "FAIL: $1 — expected '$2', got '$3'"
+        fail=1
+    fi
+}
+
+log "debver-max (Debian version selection)"
+max_of() { printf '%b' "$1" | "$REPO_ROOT/scripts/lib/debver-max"; }
+check_eq "plain revision bump" \
+    "b.deb" "$(max_of '1.0-1\ta.deb\n1.0-2\tb.deb\n')"
+check_eq "epoch beats anything" \
+    "epoch.deb" "$(max_of '2:1.0-1\tepoch.deb\n1:9.9-1\told.deb\n')"
+check_eq "tilde pre-release sorts before release" \
+    "final.deb" "$(max_of '1.0~rc1\trc.deb\n1.0\tfinal.deb\n')"
+check_eq "numeric revisions not alphabetical" \
+    "rev10.deb" "$(max_of '1.0-9\trev9.deb\n1.0-10\trev10.deb\n')"
+check_eq "first of equal versions wins (documented tie-break)" \
+    "same1.deb" "$(max_of '1.0-1\tsame1.deb\n1.0-1\tsame2.deb\n')"
+
+log "render_template (token substitution via stdin)"
+printf 'Hello @NAME@ at @PAGES_URL@!\n' > "$TMP/tpl.txt"
+printf 'NAME=world\nPAGES_URL=https://example.invalid/\n' \
+    | render_template "$TMP/tpl.txt" "$TMP/out.txt"
+check_eq "template rendered" "Hello world at https://example.invalid/!" "$(cat "$TMP/out.txt")"
+
+log "write_debian_changelog (deterministic date from epoch)"
+# consumed by write_debian_changelog from the sourced library
+# shellcheck disable=SC2034
+REPO_SUITE="stable"
+# shellcheck disable=SC2034
+REPO_MAINTAINER="Test Maintainer <test@example.invalid>"
+write_debian_changelog "$TMP" testpkg "1.2.3-1" "note" 1700000000
+write_debian_changelog "$TMP" testpkg "1.2.3-1" "note" 1700000000
+check_eq "same epoch → byte-identical changelog" \
+    "$(cat "$TMP/changelog")" "$(cat "$TMP/changelog")"
+grep -q '^testpkg (1.2.3-1) stable; urgency=medium$' "$TMP/changelog" \
+    && step "OK: changelog header format" \
+    || { warn "FAIL: changelog header format"; fail=1; }
+
+log "upstream_version (tomllib extraction)"
+mkdir -p "$TMP/src"
+printf '[package]\nname = "x"\nversion = "9.9.9"\n' > "$TMP/src/Cargo.toml"
+check_eq "cargo version extracted" "9.9.9" "$(upstream_version "$TMP/src" cargo)"
+
+log "no secret key material tracked in Git"
+tracked="$(git -C "$REPO_ROOT" ls-files)"
+if printf '%s\n' "$tracked" \
+    | grep -Eqi '(^|/)(\.env($|\.)|credentials($|\.)|secrets?($|/)|private/|gnupg/)|\.(key|keys|asc|gpg|private|secret|pem|p12|pfx|jks|keystore|kdbx)$'; then
+    warn "FAIL: private-looking files tracked in Git"
+    fail=1
+else
+    step "OK: no private-looking paths or extensions tracked"
+fi
+
+# Deliberately narrow, high-confidence token signatures. Values are never
+# printed: on failure only the containing tracked path is reported.
+secret_pattern='BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}'
+secret_files="$(git -C "$REPO_ROOT" grep -IlE -- "$secret_pattern" HEAD 2>/dev/null || true)"
+if [ -n "$secret_files" ]; then
+    warn "FAIL: probable credential material in tracked files:"
+    while IFS= read -r secret_file; do
+        warn "  ${secret_file#HEAD:}"
+    done <<< "$secret_files"
+    fail=1
+else
+    step "OK: no high-confidence credential signatures tracked"
+fi
+
+if printf '%s\n' "$tracked" | grep -Eq '^(docs/|info/|cronologia\.md$)'; then
+    warn "FAIL: maintainer-only notes are tracked in Git"
+    fail=1
+else
+    step "OK: maintainer-only note paths are not tracked"
+fi
+if have gpg; then
+    secret_found=false
+    for f in "$KEYRINGS_DIR"/*.pgp; do
+        [ -e "$f" ] || break
+        if gpg --list-packets "$f" 2>/dev/null | grep -qi 'secret'; then
+            warn "FAIL: secret key packets in $f"
+            secret_found=true
+        fi
+    done
+    [ "$secret_found" = false ] && step "OK: committed keyrings contain public material only" || fail=1
+else
+    warn "gpg not available — skipped packet scan"
+fi
+
+log "config sanity"
+check_eq "fingerprint configured" "40" "$(printf '%s' "${SIGNING_FPR:-}" | wc -c)"
+
+log "registry paths (clean-runner safe)"
+while IFS= read -r name; do
+    load_registry_entry "$name"
+    [ -n "$REG_RECIPE" ] || continue
+    case "$REG_RECIPE_DIR" in
+        "$PACKAGES_DIR"/*) ;;
+        *) warn "FAIL: $name recipe escapes packages/: $REG_RECIPE_DIR"; fail=1; continue;;
+    esac
+    if [ -f "$REG_RECIPE_DIR/package.toml" ]; then
+        step "OK: $name recipe resolves to ${REG_RECIPE_DIR#"$REPO_ROOT/"}"
+    elif [ "$REG_ENABLED" = true ]; then
+        warn "FAIL: enabled $name recipe is missing: $REG_RECIPE_DIR/package.toml"
+        fail=1
+    fi
+done < <(list_packages)
+
+if [ "$fail" = 0 ]; then
+    log "SELFTEST PASSED"
+else
+    die "selftest failures — see warnings above"
+fi

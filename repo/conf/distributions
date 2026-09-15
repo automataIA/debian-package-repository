@@ -1,0 +1,9 @@
+Origin: Automata
+Label: Automata Packages
+Codename: stable
+Suite: stable
+Architectures: amd64
+Components: main
+Description: Debian packages maintained by automataIA
+SignWith: 403408F5E286FDE9CBD1A6E2CF4AF8E0A5A535B6
+ValidFor: 14

@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+# Prefer the rustup toolchain: crates may need a newer rustc than the
+# distribution default.
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# The upstream default is CUDA and requires nvcc. Repository artifacts
+	# target ordinary amd64 systems, so build the supported CPU backend.
+	cargo build --release --locked --no-default-features --bin graphlib
+
+override_dh_auto_test:
+	./target/release/graphlib --version >/dev/null 2>&1 || \
+		./target/release/graphlib --help >/dev/null 2>&1

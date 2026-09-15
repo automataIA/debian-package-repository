@@ -1,0 +1,21 @@
+# rag-bone-rs — collector metadata (the real packaging lives in debian/)
+name = "rag-bone-rs"
+source = "~/rag-bone-rs"
+github = "automataIA/rag-bone-rs"
+
+version_source = "cargo"
+deb_revision = 1
+architecture = "amd64"
+section = "utils"
+priority = "optional"
+
+cargo_bins = ["rag-bone"]
+smoke_command = "rag-bone --help"
+
+description = "Local semantic search CLI for docs and multi-language codebases"
+long_description = """
+ rag-bone is a local semantic search command line tool for documentation
+ and multi-language codebases. It indexes content into embeddings and
+ returns context-aware results without sending data anywhere, suitable
+ for private codebases and offline documentation mining.
+"""
